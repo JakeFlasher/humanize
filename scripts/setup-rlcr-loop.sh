@@ -1180,6 +1180,10 @@ write_summary_template() {
 
 [List any deferred or pending items]
 
+## Knowledge Consulted
+
+TODO-KB-PROVENANCE: Replace this line with one bullet per concrete reference file actually opened this round. Each bullet must include the repo-relative file path and a one-line reason it was opened. Do not invent files; reviewers may spot-check that listed files exist and were actually read. If no KB-relevant work happened, replace this line with the required exact N/A provenance literal from the surrounding template instructions.
+
 ## BitLesson Delta
 
 Action: none
@@ -1314,6 +1318,10 @@ Before starting implementation, create @$ROUND_CONTRACT_PATH with:
 Use this contract to keep the round focused. Do NOT let non-blocking bugs or cleanup work replace the mainline objective.
 
 **IMPORTANT**: The IMMUTABLE SECTION can only be modified in Round 0. After this round, it becomes read-only.
+
+## Repo Knowledge Primer (optional, file-presence gated)
+
+If this repo configures an auto-routing knowledge-base hook (e.g. a \`UserPromptSubmit\` hook that injects matching reference cards as system reminders), defer to those injected cards rather than re-opening primers preemptively. Otherwise, if a local primer exists at \`.claude/knowledge/INDEX.md\`, read it before coding or delegating domain-specific / modeling / metrics work. Skip this step entirely if neither is configured.
 
 ---
 
