@@ -50,3 +50,4 @@ Your summary should include:
 - Files modified during the Finalize Phase
 - Confirmation that tests still pass
 - Any notes about the refactoring decisions
+- A `## Knowledge Consulted` section listing concrete reference files actually opened during finalize (one bullet per file: path + 1-line "why opened"; e.g. repo-local knowledge primers, vendor manuals, paper PDFs, metric manifests). Do not invent files; reviewers may spot-check that listed paths exist. If genuinely no KB-relevant work happened, replace the bullets with the exact string `N/A -- task not KB-relevant this round`

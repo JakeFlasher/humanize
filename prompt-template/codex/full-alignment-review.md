@@ -90,6 +90,7 @@ Capability scope drift: yes/no
 - Verify Claude's claims match reality
 - Identify any gaps, bugs, or incomplete work
 - Reference @{{DOCS_PATH}} for design documents
+- **Knowledge Provenance Check**: Verify Claude's summary includes a `## Knowledge Consulted` section listing concrete reference files (e.g. `.claude/knowledge/**/*.md`, vendor manuals, paper PDFs, metric manifests) or the exact string `N/A -- task not KB-relevant this round`. If the section is missing on KB-relevant work, or if `N/A` is used as a shortcut for domain-specific / modeling / metrics tasks, flag as a Blocking Side Issue.
 
 ## Part 5: {{GOAL_TRACKER_UPDATE_SECTION}}
 
