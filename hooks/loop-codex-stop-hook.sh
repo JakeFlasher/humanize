@@ -1555,6 +1555,10 @@ continue_review_loop_with_issues() {
 ## Remaining Items
 - [List unresolved items, if any]
 
+## Knowledge Consulted
+
+TODO-KB-PROVENANCE: Replace this line with one bullet per concrete reference file actually opened this round. Each bullet must include the repo-relative file path and a one-line reason it was opened. Do not invent files; reviewers may spot-check that listed files exist and were actually read. If no KB-relevant work happened, replace this line with the required exact N/A provenance literal from the surrounding template instructions.
+
 ## BitLesson Delta
 - Action: none|add|update
 - Lesson ID(s): NONE
@@ -2045,6 +2049,10 @@ if [[ ! -f "$NEXT_SUMMARY_FILE" ]]; then
 
 ## Remaining Items
 - [List unresolved items, if any]
+
+## Knowledge Consulted
+
+TODO-KB-PROVENANCE: Replace this line with one bullet per concrete reference file actually opened this round. Each bullet must include the repo-relative file path and a one-line reason it was opened. Do not invent files; reviewers may spot-check that listed files exist and were actually read. If no KB-relevant work happened, replace this line with the required exact N/A provenance literal from the surrounding template instructions.
 
 ## BitLesson Delta
 - Action: none|add|update
