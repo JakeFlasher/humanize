@@ -31,6 +31,7 @@ Below is Claude's summary of the work completed:
   - Your review should elaborate on those unfinished tasks, explore the codebase, and draft an implementation plan.
   - A good engineering implementation plan should be **singular, directive, and definitive**, rather than discussing multiple possible implementation options.
   - The implementation plan should be **unambiguous**, internally consistent, and coherent from beginning to end, so that **Claude can execute the work accurately and without error**.
+- **Knowledge Provenance Check**: Verify Claude's summary includes a `## Knowledge Consulted` section listing concrete reference files (e.g. `.claude/knowledge/**/*.md`, vendor manuals, paper PDFs, metric manifests) or the exact string `N/A -- task not KB-relevant this round`. If the section is missing on KB-relevant work, or if `N/A` is used as a shortcut for domain-specific / modeling / metrics tasks, flag as a Blocking Side Issue.
 
 ## Part 2: Goal Alignment Check (MANDATORY)
 

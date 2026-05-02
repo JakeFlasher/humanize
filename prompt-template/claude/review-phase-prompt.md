@@ -49,6 +49,7 @@ Your summary should include:
 - Any issues that could not be resolved (with explanation)
 - Confirmation that `goal-tracker.md` was updated if the blocking/queued issue lists changed
 - A Goal Tracker Update Request only if tracker reconciliation still needs Codex help
+- A `## Knowledge Consulted` section listing concrete reference files actually opened this round (one bullet per file: path + 1-line "why opened"; e.g. repo-local knowledge primers, vendor manuals, paper PDFs, metric manifests). Do not invent files; reviewers may spot-check that listed paths exist. If genuinely no KB-relevant work happened, replace the bullets with the exact string `N/A -- task not KB-relevant this round`
 
 ## Important Notes
 
