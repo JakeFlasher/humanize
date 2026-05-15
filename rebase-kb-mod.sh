@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# rebase-kb-mod.sh - Rebase the local my-KB-mod branch onto the latest origin/dev.
+# rebase-kb-mod.sh - Rebase the local kernel_pilot branch onto the latest origin/dev.
 #
 # Usage:
 #   ./rebase-kb-mod.sh              # normal run
 #   ./rebase-kb-mod.sh --dry-run    # fetch + overlap check only, no rebase
 #
 # What it does:
-#   1. Verifies we are on the my-KB-mod branch inside the expected repo.
+#   1. Verifies we are on the kernel_pilot branch inside the expected repo.
 #   2. Fetches origin/dev.
 #   3. Computes the fork point (merge-base) and auto-derives the list of
 #      locally modified files. Works with any number of local commits.
@@ -23,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # --- Configuration ---
-BRANCH="my-KB-mod"
+BRANCH="kernel_pilot"
 UPSTREAM="origin/dev"
 
 # --- Helpers ---
