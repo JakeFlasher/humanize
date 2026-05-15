@@ -21,6 +21,7 @@ import argparse
 import datetime as _dt
 import hashlib
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -340,7 +341,15 @@ def _validate_sol_score(sidecar: Dict[str, Any]) -> Optional[str]:
     """Return a block_reason if ``sol_score`` is missing or malformed.
 
     AC-3 forbids silent defaults; an absent ``sol_score`` block must
-    hard-block rather than emit ``null`` in the JSONL row.
+    hard-block rather than emit ``null`` in the JSONL row. The check is
+    schema-exact:
+
+    - ``value`` must be a JSON number (``int``/``float`` but NOT ``bool``;
+      ``bool`` is an ``int`` subclass in Python) and finite, or the literal
+      string ``"unknown_t_sol"``.
+    - ``provenance.authority`` and ``provenance.basis`` must be non-empty
+      strings.
+    - ``provenance.leaderboard_comparable`` must be a JSON bool.
     """
     sol_score = sidecar.get("sol_score")
     if not isinstance(sol_score, dict):
@@ -348,7 +357,11 @@ def _validate_sol_score(sidecar: Dict[str, Any]) -> Optional[str]:
     if "value" not in sol_score:
         return "sol_score_missing_value"
     value = sol_score["value"]
-    if value != "unknown_t_sol" and not isinstance(value, (int, float)):
+    if value == "unknown_t_sol":
+        pass
+    elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "sol_score_invalid_value"
+    elif not math.isfinite(value):
         return "sol_score_invalid_value"
     provenance = sol_score.get("provenance")
     if not isinstance(provenance, dict):
@@ -356,9 +369,22 @@ def _validate_sol_score(sidecar: Dict[str, Any]) -> Optional[str]:
     for key in ("authority", "basis", "leaderboard_comparable"):
         if key not in provenance:
             return f"sol_score_provenance_missing_{key}"
+    for key in ("authority", "basis"):
+        entry = provenance.get(key)
+        if not isinstance(entry, str) or not entry.strip():
+            return f"sol_score_provenance_bad_{key}"
     if not isinstance(provenance.get("leaderboard_comparable"), bool):
         return "sol_score_provenance_bad_leaderboard_comparable"
     return None
+
+
+def validate_sidecar_payload(sidecar: Dict[str, Any]) -> Optional[str]:
+    """Return a block_reason for malformed payload fields whose schema is
+    independent of the verdict-tuple computation. This runs once, before
+    :func:`compute_verdict_tuple`, so a sidecar that fails correctness
+    cannot bypass schema checks (AC-3 negative-test invariant).
+    """
+    return _validate_sol_score(sidecar)
 
 
 def compute_verdict_tuple(
@@ -376,10 +402,6 @@ def compute_verdict_tuple(
         return 1, "correctness_block_missing", "blocked", False
     if correctness.get("passed") is not True:
         return 1, "correctness_failed", "blocked", False
-
-    sol_score_block_reason = _validate_sol_score(sidecar)
-    if sol_score_block_reason is not None:
-        return 1, sol_score_block_reason, "blocked", False
 
     required_surfaces = sidecar.get("required_surfaces", [])
     if not isinstance(required_surfaces, list):
@@ -691,7 +713,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     codex_verdict = args.codex_verdict
     terminal_reason = LOGGED_ONLY_TERMINAL_REASONS.get(transition)
 
-    state_file = Path(args.state_file).resolve() if args.state_file else None
+    # AC-13: default --state-file to $loop_dir/state.md so direct engine
+    # calls (not just wrapper-driven ones) cross-check the sidecar round
+    # against the active state frontmatter. Adapter-active gated calls
+    # below treat an unparsable / missing state round as a hard-block.
+    if args.state_file:
+        state_file = Path(args.state_file).resolve()
+    else:
+        state_file = (loop_dir / "state.md").resolve()
     state_round = parse_state_round(state_file)
 
     adapter_active, _ = detect_adapter(loop_dir, project_root)
@@ -722,6 +751,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"Sidecar absent at {sidecar_file}",
             )
         sidecar = read_sidecar(sidecar_file)
+        # AC-13 fail-closed: state.md must exist and carry a parseable
+        # current_round whenever the adapter is active. The wrapper always
+        # passes --state-file, but direct engine calls now also default
+        # to $loop_dir/state.md and refuse to proceed if it is missing.
+        if state_round is None and mode == "gated":
+            raise SidecarIdentityError(
+                "sidecar_identity_invalid:state_round_unavailable",
+                f"State file {state_file} missing or current_round unparsable; "
+                f"adapter-active gated mode requires a valid state.md.",
+            )
         validate_sidecar_identity(
             sidecar,
             loop_dir=loop_dir,
@@ -731,6 +770,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         manifest = read_manifest(sidecar["manifest_path"], project_root)
         surfaces = extract_per_surface_manifest(manifest)
+        payload_block_reason = validate_sidecar_payload(sidecar)
+        if payload_block_reason is not None:
+            raise SidecarMalformedError(payload_block_reason, payload_block_reason)
     except VerdictError as exc:
         row = _build_jsonl_row(
             transition=transition,

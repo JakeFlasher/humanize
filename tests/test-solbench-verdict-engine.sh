@@ -1220,14 +1220,258 @@ else
 fi
 cleanup_env "$TMP_MM"
 
-# AC-8 stop-hook integration: the upsert call at next_round transition
-# now includes all four scalar field references.
+# AC-8 stop-hook integration: persist_verdict_scalar_fields() is now the
+# single source of truth for the four scalar AC-8 fields. The helper
+# lives in loop-common.sh and references all four FIELD_* constants; the
+# stop hook calls it at every non-hard-block state-mutation site.
 for var in FIELD_VERDICT_MISMATCH FIELD_VERDICT_MISMATCH_COUNT FIELD_LAST_COMPUTED_VERDICT FIELD_LAST_BLOCK_REASON; do
-    if grep -q "\${$var}=" "$STOP_HOOK"; then
-        pass "AC-8 (round 1): stop-hook upsert references \${$var}"
+    if grep -q "\${$var}=" "$WRAPPER_FILE"; then
+        pass "AC-8 (round 1): loop-common.sh persist helper references \${$var}"
     else
-        fail "AC-8 (round 1): stop-hook missing \${$var} in upsert call"
+        fail "AC-8 (round 1): loop-common.sh missing \${$var} in persist helper"
     fi
 done
+persist_call_count=$(grep -c "persist_verdict_scalar_fields " "$STOP_HOOK")
+if [[ "$persist_call_count" -ge 4 ]]; then
+    pass "AC-8 (round 2): persist_verdict_scalar_fields called at >=4 mutation sites (got $persist_call_count)"
+else
+    fail "AC-8 (round 2): persist_verdict_scalar_fields called $persist_call_count times, expected >=4"
+fi
+
+# ------------------------------------------------------------------
+# Round 2 hardening assertions (post Round-1 Codex review)
+# ------------------------------------------------------------------
+
+# AC-3 (round 2): sol_score validation runs even when correctness fails.
+# A sidecar with correctness.passed=false AND missing sol_score must
+# hard-block under sol_score_missing, NOT correctness_failed. Otherwise
+# the JSONL row carries "sol_score": null and AC-3 is violated.
+TMP_C_S=$(mktemp -d)
+LOOP_C_S=$(setup_test_env "$TMP_C_S")
+make_sidecar "$LOOP_C_S" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"correctness": {"passed": false}}' >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.pop('sol_score'); json.dump(d, open(p,'w'))" "$LOOP_C_S/round-1-objectives.json"
+rc=$(run_engine "$TMP_C_S" "$LOOP_C_S" 1)
+row_cs=$(last_jsonl_row "$LOOP_C_S")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_missing'" "$row_cs" 2>/dev/null; then
+    pass "AC-3 (round 2): correctness-failed + missing sol_score -> sol_score_missing (not correctness_failed)"
+else
+    fail "AC-3 (round 2): correctness-failed + missing sol_score wrong block_reason"
+fi
+if [[ "$rc" == "1" ]]; then
+    pass "AC-3 (round 2): correctness-failed + missing sol_score -> exit 1"
+else
+    fail "AC-3 (round 2): exit $rc, expected 1"
+fi
+cleanup_env "$TMP_C_S"
+
+# AC-3 (round 2): JSON bool as sol_score.value is rejected (bool is int
+# subclass in Python; naive isinstance check would accept it).
+TMP_BOOL=$(mktemp -d)
+LOOP_BOOL=$(setup_test_env "$TMP_BOOL")
+make_sidecar "$LOOP_BOOL" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['sol_score']['value']=True; json.dump(d, open(p,'w'))" "$LOOP_BOOL/round-1-objectives.json"
+rc=$(run_engine "$TMP_BOOL" "$LOOP_BOOL" 1)
+row_bool=$(last_jsonl_row "$LOOP_BOOL")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_invalid_value'" "$row_bool" 2>/dev/null; then
+    pass "AC-3 (round 2): JSON bool sol_score.value -> sol_score_invalid_value"
+else
+    fail "AC-3 (round 2): bool value not rejected"
+fi
+cleanup_env "$TMP_BOOL"
+
+# AC-3 (round 2): non-finite numeric value is rejected.
+TMP_INF=$(mktemp -d)
+LOOP_INF=$(setup_test_env "$TMP_INF")
+make_sidecar "$LOOP_INF" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+python3 -c "import json,math,sys; p=sys.argv[1]; d=json.load(open(p)); d['sol_score']['value']=math.inf; open(p,'w').write(json.dumps(d, allow_nan=True))" "$LOOP_INF/round-1-objectives.json"
+rc=$(run_engine "$TMP_INF" "$LOOP_INF" 1)
+row_inf=$(last_jsonl_row "$LOOP_INF")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_invalid_value'" "$row_inf" 2>/dev/null; then
+    pass "AC-3 (round 2): non-finite sol_score.value -> sol_score_invalid_value"
+else
+    fail "AC-3 (round 2): non-finite value not rejected"
+fi
+cleanup_env "$TMP_INF"
+
+# AC-3 (round 2): null authority rejected (was previously only existence-checked).
+TMP_AUTH_NULL=$(mktemp -d)
+LOOP_AUTH_NULL=$(setup_test_env "$TMP_AUTH_NULL")
+make_sidecar "$LOOP_AUTH_NULL" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['sol_score']['provenance']['authority']=None; json.dump(d, open(p,'w'))" "$LOOP_AUTH_NULL/round-1-objectives.json"
+rc=$(run_engine "$TMP_AUTH_NULL" "$LOOP_AUTH_NULL" 1)
+row_auth=$(last_jsonl_row "$LOOP_AUTH_NULL")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_provenance_bad_authority'" "$row_auth" 2>/dev/null; then
+    pass "AC-3 (round 2): null sol_score.provenance.authority -> sol_score_provenance_bad_authority"
+else
+    fail "AC-3 (round 2): null authority not rejected"
+fi
+cleanup_env "$TMP_AUTH_NULL"
+
+# AC-3 (round 2): basis with empty string rejected.
+TMP_BASIS=$(mktemp -d)
+LOOP_BASIS=$(setup_test_env "$TMP_BASIS")
+make_sidecar "$LOOP_BASIS" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['sol_score']['provenance']['basis']=''; json.dump(d, open(p,'w'))" "$LOOP_BASIS/round-1-objectives.json"
+rc=$(run_engine "$TMP_BASIS" "$LOOP_BASIS" 1)
+row_basis=$(last_jsonl_row "$LOOP_BASIS")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_provenance_bad_basis'" "$row_basis" 2>/dev/null; then
+    pass "AC-3 (round 2): empty sol_score.provenance.basis -> sol_score_provenance_bad_basis"
+else
+    fail "AC-3 (round 2): empty basis not rejected"
+fi
+cleanup_env "$TMP_BASIS"
+
+# AC-13 (round 2): direct engine call without --state-file picks up
+# $loop_dir/state.md by default and hard-blocks on mismatch.
+TMP_DEF_SF=$(mktemp -d)
+LOOP_DEF_SF=$(setup_test_env "$TMP_DEF_SF" 2)
+make_sidecar "$LOOP_DEF_SF" 2 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+sed -i 's/^current_round:.*/current_round: 7/' "$LOOP_DEF_SF/state.md"
+rc=0
+python3 "$ENGINE" --loop-dir "$LOOP_DEF_SF" --round 2 --project-root "$TMP_DEF_SF" 2>/dev/null || rc=$?
+if [[ "$rc" == "1" ]]; then
+    pass "AC-13 (round 2): default --state-file picks up state.md and detects mismatch"
+else
+    fail "AC-13 (round 2): default --state-file exit $rc, expected 1"
+fi
+row_def=$(last_jsonl_row "$LOOP_DEF_SF")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sidecar_identity_mismatch:state_round'" "$row_def" 2>/dev/null; then
+    pass "AC-13 (round 2): default --state-file mismatch block_reason"
+else
+    fail "AC-13 (round 2): default --state-file mismatch reason wrong"
+fi
+cleanup_env "$TMP_DEF_SF"
+
+# AC-13 (round 2): direct engine call when state.md is missing entirely
+# (adapter-active gated mode) hard-blocks under
+# sidecar_identity_invalid:state_round_unavailable.
+TMP_NO_SF=$(mktemp -d)
+LOOP_NO_SF=$(setup_test_env "$TMP_NO_SF")
+make_sidecar "$LOOP_NO_SF" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+rm -f "$LOOP_NO_SF/state.md"
+rc=0
+python3 "$ENGINE" --loop-dir "$LOOP_NO_SF" --round 1 --project-root "$TMP_NO_SF" 2>/dev/null || rc=$?
+if [[ "$rc" == "1" ]]; then
+    pass "AC-13 (round 2): missing state.md in adapter-active gated mode -> exit 1"
+else
+    fail "AC-13 (round 2): missing state.md exit $rc, expected 1"
+fi
+row_no_sf=$(last_jsonl_row "$LOOP_NO_SF")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sidecar_identity_invalid:state_round_unavailable'" "$row_no_sf" 2>/dev/null; then
+    pass "AC-13 (round 2): missing state.md block_reason=state_round_unavailable"
+else
+    fail "AC-13 (round 2): missing state.md block_reason wrong"
+fi
+cleanup_env "$TMP_NO_SF"
+
+# AC-8 (round 2): the legacy sed-only current_round mutation inside
+# continue_review_loop_with_issues() is replaced by upsert_state_fields.
+if grep -E 'sed "s/\^current_round: \.\*/current_round:' "$STOP_HOOK" >/dev/null; then
+    fail "AC-8 (round 2): legacy sed-based current_round mutation still present"
+else
+    pass "AC-8 (round 2): review_fix mutation no longer uses sed on current_round"
+fi
+if grep -nE 'FIELD_CURRENT_ROUND\}=\$\{round\}' "$STOP_HOOK" >/dev/null; then
+    pass "AC-8 (round 2): review_fix uses \${FIELD_CURRENT_ROUND}=\${round} upsert"
+else
+    fail "AC-8 (round 2): review_fix upsert pattern missing"
+fi
+
+# AC-8 (round 2): persist_verdict_scalar_fields helper exists in
+# loop-common.sh and is callable.
+if grep -q '^persist_verdict_scalar_fields()' "$WRAPPER_FILE"; then
+    pass "AC-8 (round 2): persist_verdict_scalar_fields function declared"
+else
+    fail "AC-8 (round 2): persist_verdict_scalar_fields not found in loop-common.sh"
+fi
+
+# AC-8 (round 2): the helper is invoked at all four expected mutation
+# sites. The earlier "persist_verdict_scalar_fields called at >=4
+# mutation sites" assertion counts call sites; here we additionally lock
+# each phase by line-anchored proximity grep so a future refactor that
+# accidentally drops one of the four phases is caught.
+for phase_marker in next_round review_fix review_start enter_finalize; do
+    persist_lines=$(grep -n 'persist_verdict_scalar_fields ' "$STOP_HOOK" | awk -F: '{print $1}')
+    phase_line=$(grep -nE "\"$phase_marker\"|enter_finalize_phase\\(|continue_review_loop_with_issues\\(" "$STOP_HOOK" | head -1 | awk -F: '{print $1}')
+    found_pair=false
+    for pl in $persist_lines; do
+        diff=$(( pl - phase_line ))
+        # absolute diff within 200 lines is "near"
+        abs=$(( diff < 0 ? -diff : diff ))
+        if [[ "$abs" -le 200 ]]; then
+            found_pair=true
+            break
+        fi
+    done
+    if [[ "$found_pair" == "true" ]]; then
+        pass "AC-8 (round 2): persist helper integrated within 200 lines of $phase_marker transition"
+    else
+        fail "AC-8 (round 2): persist helper not integrated near $phase_marker transition"
+    fi
+done
+
+# AC-8 (round 2): persist helper writes prior count + 1 on mismatch.
+TMP_P=$(mktemp -d)
+LOOP_P=$(setup_test_env "$TMP_P")
+WRAPPER_P_OUT=$(
+    bash -c "
+        source '$WRAPPER_FILE' 2>/dev/null
+        VERDICT_ENGINE_MISMATCH=true
+        VERDICT_ENGINE_COMPUTED=blocked
+        VERDICT_ENGINE_BLOCK_REASON=correctness_failed
+        persist_verdict_scalar_fields '$LOOP_P/state.md'
+        # Check the file
+        grep -E '^(verdict_mismatch|verdict_mismatch_count|last_computed_verdict|last_block_reason):' '$LOOP_P/state.md'
+    " 2>/dev/null
+)
+if echo "$WRAPPER_P_OUT" | grep -q "verdict_mismatch: true" && \
+   echo "$WRAPPER_P_OUT" | grep -q "verdict_mismatch_count: 1" && \
+   echo "$WRAPPER_P_OUT" | grep -q "last_computed_verdict: blocked" && \
+   echo "$WRAPPER_P_OUT" | grep -q "last_block_reason: correctness_failed"; then
+    pass "AC-8 (round 2): persist helper writes all 4 scalars with bumped count"
+else
+    fail "AC-8 (round 2): persist helper output wrong:
+$WRAPPER_P_OUT"
+fi
+cleanup_env "$TMP_P"
+
+# AC-8 (round 2): persist helper bumps count from prior 5 to 6 on mismatch.
+TMP_P5=$(mktemp -d)
+LOOP_P5=$(setup_test_env "$TMP_P5")
+sed -i 's/^verdict_mismatch_count: 0/verdict_mismatch_count: 5/' "$LOOP_P5/state.md"
+WRAPPER_P5_OUT=$(
+    bash -c "
+        source '$WRAPPER_FILE' 2>/dev/null
+        VERDICT_ENGINE_MISMATCH=true
+        persist_verdict_scalar_fields '$LOOP_P5/state.md'
+        grep '^verdict_mismatch_count:' '$LOOP_P5/state.md'
+    " 2>/dev/null
+)
+if [[ "$(echo "$WRAPPER_P5_OUT" | tr -d ' ')" == "verdict_mismatch_count:6" ]]; then
+    pass "AC-8 (round 2): persist helper bumps count from 5 to 6 on mismatch"
+else
+    fail "AC-8 (round 2): persist count bump wrong (got: $WRAPPER_P5_OUT)"
+fi
+cleanup_env "$TMP_P5"
+
+# AC-8 (round 2): persist helper preserves count when no mismatch flagged.
+TMP_P_NM=$(mktemp -d)
+LOOP_P_NM=$(setup_test_env "$TMP_P_NM")
+sed -i 's/^verdict_mismatch_count: 0/verdict_mismatch_count: 3/' "$LOOP_P_NM/state.md"
+WRAPPER_P_NM_OUT=$(
+    bash -c "
+        source '$WRAPPER_FILE' 2>/dev/null
+        VERDICT_ENGINE_MISMATCH=false
+        persist_verdict_scalar_fields '$LOOP_P_NM/state.md'
+        grep '^verdict_mismatch_count:' '$LOOP_P_NM/state.md'
+    " 2>/dev/null
+)
+if [[ "$(echo "$WRAPPER_P_NM_OUT" | tr -d ' ')" == "verdict_mismatch_count:3" ]]; then
+    pass "AC-8 (round 2): persist helper preserves count when no mismatch"
+else
+    fail "AC-8 (round 2): persist count preserved wrong (got: $WRAPPER_P_NM_OUT)"
+fi
+cleanup_env "$TMP_P_NM"
 
 print_test_summary "Solbench Verdict Engine Tests"

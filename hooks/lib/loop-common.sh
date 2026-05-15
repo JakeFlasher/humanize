@@ -837,6 +837,34 @@ PY
     return "$engine_exit"
 }
 
+# Persist the four AC-8 scalar verdict fields to a state file using the
+# wrapper's most recent VERDICT_ENGINE_* exports. Reads the prior
+# verdict_mismatch_count from the state file and bumps it whenever the
+# wrapper flagged a mismatch. The caller MUST NOT invoke this on
+# hard-block paths (per AC-15 those must leave state.md byte-identical).
+#
+# Arguments:
+#   $1 - state_file path. Typical values: $STATE_FILE, $LOOP_DIR/state.md,
+#        or a renamed terminal state file (finalize-state.md).
+persist_verdict_scalar_fields() {
+    local state_file="$1"
+    [[ -f "$state_file" ]] || return 0
+
+    local prior
+    prior=$(awk -F: '/^verdict_mismatch_count:/{gsub(/[[:space:]]+/,"",$2); print $2; exit}' "$state_file" 2>/dev/null)
+    prior="${prior:-0}"
+    local new_count="$prior"
+    if [[ "${VERDICT_ENGINE_MISMATCH:-false}" == "true" ]]; then
+        new_count=$((prior + 1))
+    fi
+
+    upsert_state_fields "$state_file" \
+        "${FIELD_VERDICT_MISMATCH}=${VERDICT_ENGINE_MISMATCH:-false}" \
+        "${FIELD_VERDICT_MISMATCH_COUNT}=${new_count}" \
+        "${FIELD_LAST_COMPUTED_VERDICT}=${VERDICT_ENGINE_COMPUTED:-unknown}" \
+        "${FIELD_LAST_BLOCK_REASON}=${VERDICT_ENGINE_BLOCK_REASON:-null}"
+}
+
 # Detect review issues from codex review log file
 # Returns:
 #   0 - issues found (caller should continue review loop)

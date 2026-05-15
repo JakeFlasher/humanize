@@ -1345,6 +1345,12 @@ The artifact verdict engine refused to enter the finalize phase. Inspect the lat
         exit 0
     fi
 
+    # Non-hard-block: persist the four scalar verdict fields BEFORE the
+    # state-file rename so the renamed finalize-state.md carries the
+    # latest computed verdict + block_reason. This is the last call site
+    # that can update the active state.md.
+    persist_verdict_scalar_fields "$STATE_FILE"
+
     mv "$STATE_FILE" "$LOOP_DIR/finalize-state.md"
     echo "State file renamed to: $LOOP_DIR/finalize-state.md" >&2
 
@@ -1547,10 +1553,13 @@ The artifact verdict engine refused to advance the review-fix loop into round $r
         exit 0
     fi
 
-    # Update round number in state file
-    local temp_file="${STATE_FILE}.tmp.$$"
-    sed "s/^current_round: .*/current_round: $round/" "$STATE_FILE" > "$temp_file"
-    mv "$temp_file" "$STATE_FILE"
+    # Update round number in state file via upsert so current_round and the
+    # AC-8 scalar verdict fields persist atomically. The legacy sed
+    # mutation only touched current_round and left the verdict scalars
+    # stale across review-fix rounds.
+    upsert_state_fields "$STATE_FILE" \
+        "${FIELD_CURRENT_ROUND}=${round}"
+    persist_verdict_scalar_fields "$STATE_FILE"
 
     # Build review-fix prompt for Claude
     local next_prompt_file="$LOOP_DIR/round-${round}-prompt.md"
@@ -1954,6 +1963,7 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_COMPLETE" ]]; then
                 "${FIELD_MAINLINE_STALL_COUNT}=0" \
                 "${FIELD_LAST_MAINLINE_VERDICT}=${MAINLINE_VERDICT_ADVANCED}" \
                 "${FIELD_DRIFT_STATUS}=${DRIFT_STATUS_NORMAL}"
+            persist_verdict_scalar_fields "$STATE_FILE"
             REVIEW_STARTED="true"
 
             # Create marker file to validate review phase was properly entered
@@ -2078,27 +2088,17 @@ if [[ "$_NEXT_ROUND_VERDICT_EXIT" -eq 2 ]] && [[ -n "${VERDICT_ENGINE_DRIFT_INCR
     fi
 fi
 
-# AC-8 scalar verdict fields: read the prior verdict_mismatch_count from
-# state.md frontmatter and bump it when the engine flagged a mismatch.
-# These fields stay scalar so AC-8's "no JSON-shaped values in
-# frontmatter" assertion still holds.
-PRIOR_VERDICT_MISMATCH_COUNT=$(awk -F: '/^verdict_mismatch_count:/{gsub(/[[:space:]]+/,"",$2); print $2; exit}' "$STATE_FILE" 2>/dev/null)
-PRIOR_VERDICT_MISMATCH_COUNT="${PRIOR_VERDICT_MISMATCH_COUNT:-0}"
-NEXT_VERDICT_MISMATCH_COUNT="$PRIOR_VERDICT_MISMATCH_COUNT"
-if [[ "${VERDICT_ENGINE_MISMATCH:-false}" == "true" ]]; then
-    NEXT_VERDICT_MISMATCH_COUNT=$((PRIOR_VERDICT_MISMATCH_COUNT + 1))
-fi
-
-# Update state file for next round
+# Update state file for next round.
 upsert_state_fields "$STATE_FILE" \
     "${FIELD_CURRENT_ROUND}=${NEXT_ROUND}" \
     "${FIELD_MAINLINE_STALL_COUNT}=${NEXT_MAINLINE_STALL_COUNT}" \
     "${FIELD_LAST_MAINLINE_VERDICT}=${NEXT_LAST_MAINLINE_VERDICT}" \
-    "${FIELD_DRIFT_STATUS}=${NEXT_DRIFT_STATUS}" \
-    "${FIELD_VERDICT_MISMATCH}=${VERDICT_ENGINE_MISMATCH:-false}" \
-    "${FIELD_VERDICT_MISMATCH_COUNT}=${NEXT_VERDICT_MISMATCH_COUNT}" \
-    "${FIELD_LAST_COMPUTED_VERDICT}=${VERDICT_ENGINE_COMPUTED:-unknown}" \
-    "${FIELD_LAST_BLOCK_REASON}=${VERDICT_ENGINE_BLOCK_REASON:-null}"
+    "${FIELD_DRIFT_STATUS}=${NEXT_DRIFT_STATUS}"
+
+# AC-8: persist the four scalar verdict fields from the most recent
+# engine row. Centralized helper reads the prior verdict_mismatch_count,
+# bumps on flagged mismatch, and upserts all four scalars atomically.
+persist_verdict_scalar_fields "$STATE_FILE"
 
 # Create next round prompt
 NEXT_PROMPT_FILE="$LOOP_DIR/round-${NEXT_ROUND}-prompt.md"
