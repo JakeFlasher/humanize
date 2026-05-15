@@ -748,6 +748,10 @@ update_round_state_with_verdict() {
     local round_number="$4"
     local codex_verdict="${5:-}"
 
+    # The drift-increment flag is cleared on every call so a previous
+    # soft-warn does not leak into a later gated transition.
+    VERDICT_ENGINE_DRIFT_INCREMENT=false
+
     local engine_path="${LOOP_COMMON_DIR:-$(dirname "${BASH_SOURCE[0]:-$0}")}/solbench_verdict_engine.py"
     if [[ ! -f "$engine_path" ]]; then
         return 0
@@ -772,6 +776,13 @@ update_round_state_with_verdict() {
 
     if [[ "$mode" == "logged_only" ]]; then
         return 0
+    fi
+
+    # Soft-warn (exit 2) signals advisory drift; the caller bumps its
+    # mainline-stall counter. The flag is consumed in the same gated
+    # transition site and cleared on the next call.
+    if [[ "$engine_exit" -eq 2 ]]; then
+        VERDICT_ENGINE_DRIFT_INCREMENT=true
     fi
 
     return "$engine_exit"

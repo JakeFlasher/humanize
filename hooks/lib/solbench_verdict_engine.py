@@ -413,32 +413,52 @@ def _is_rule_required(
     return False
 
 
+_VALID_RULE_STATUSES = {"verified", "violated", "not_evaluated"}
+
+
+def _rule_status(rule_compliance: Dict[str, Any], rule_id: str) -> Optional[str]:
+    """Return the canonical rule status, or ``None`` when the entry is
+    missing / not a dict / has an unrecognized status string."""
+    entry = rule_compliance.get(rule_id, None)
+    if not isinstance(entry, dict):
+        return None
+    status = entry.get("status")
+    if status in _VALID_RULE_STATUSES:
+        return status
+    return None
+
+
 def _check_rule_compliance(
     rule_compliance: Dict[str, Any],
     rule_required: Dict[str, Any],
 ) -> Optional[str]:
     """Return a ``block_reason`` string when a rule violation hard-blocks,
-    otherwise ``None``."""
+    otherwise ``None``.
+
+    A missing rule entry, a non-dict rule entry, or an unrecognized status
+    string is treated as ``None`` here. The ``not_evaluated`` semantics
+    (AC-6d) extend to that case: a rule the sidecar marks required by
+    objective but whose compliance status is missing / malformed
+    hard-blocks under the same reason code as an explicit
+    ``not_evaluated``.
+    """
     for rule_id in ALWAYS_HARD_BLOCK_RULES:
-        entry = rule_compliance.get(rule_id, {})
-        status = entry.get("status") if isinstance(entry, dict) else None
+        status = _rule_status(rule_compliance, rule_id)
         if status == "violated":
             return f"rule_violation:{rule_id}"
-        if status == "not_evaluated" and _is_rule_required(rule_required, rule_id):
+        if status != "verified" and status != "violated" and _is_rule_required(rule_required, rule_id):
             return f"rule_not_evaluated:{rule_id}"
 
     for rule_id in CONDITIONAL_RULES:
-        entry = rule_compliance.get(rule_id, {})
-        if not isinstance(entry, dict):
-            continue
-        status = entry.get("status")
+        status = _rule_status(rule_compliance, rule_id)
         if status == "violated":
             if _is_rule_required(rule_required, rule_id):
                 return f"rule_violation:{rule_id}"
-            evidence = entry.get("evidence")
+            entry = rule_compliance.get(rule_id, {})
+            evidence = entry.get("evidence") if isinstance(entry, dict) else None
             if rule_id == "rule_9_iiswc_no_access" and isinstance(evidence, str) and evidence.strip():
                 return f"rule_violation:{rule_id}"
-        if status == "not_evaluated" and _is_rule_required(rule_required, rule_id):
+        if status != "verified" and status != "violated" and _is_rule_required(rule_required, rule_id):
             return f"rule_not_evaluated:{rule_id}"
 
     return None

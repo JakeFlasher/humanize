@@ -1527,11 +1527,14 @@ continue_review_loop_with_issues() {
 
     echo "Code review found issues. Continuing review loop..." >&2
 
-    # Verdict engine gate before advancing the review-fix loop. On hard-block
-    # the wrapper has appended the JSONL row but we refuse the sed mutation
-    # and emit a block JSON so the operator fixes the artifact issue first.
+    # Verdict engine gate before advancing the review-fix loop. The sidecar
+    # consulted is round-${CURRENT_ROUND}-objectives.json (the round whose
+    # artifacts Codex just reviewed); passing the target round here would
+    # look up a sidecar that does not yet exist. On hard-block the wrapper
+    # has appended the JSONL row but we refuse the sed mutation and emit a
+    # block JSON so the operator fixes the artifact issue first.
     local _review_fix_verdict_exit=0
-    update_round_state_with_verdict "gated" "review_fix" "$LOOP_DIR" "$round" \
+    update_round_state_with_verdict "gated" "review_fix" "$LOOP_DIR" "$CURRENT_ROUND" \
         || _review_fix_verdict_exit=$?
     if [[ "$_review_fix_verdict_exit" -eq 1 ]]; then
         local _review_fix_block_reason="# Verdict Engine Hard-Block (Review-Fix Transition)
@@ -2045,11 +2048,14 @@ fi
 
 # Verdict engine gate: refuse to advance to the next round on an
 # artifact-proven correctness / required-surface / required-latency /
-# leaderboard-comparable / rule-violation block. Mutation ordering: emit
-# the JSONL row only, leave state.md untouched, and let the caller below
-# skip the upsert + next-round-prompt creation entirely.
+# leaderboard-comparable / rule-violation block. The sidecar evaluated
+# here is round-${CURRENT_ROUND}-objectives.json (the round that just
+# completed); the documented schema pins sidecar.round to current_round
+# at sidecar-write time. Mutation ordering: emit the JSONL row only,
+# leave state.md untouched, and let the caller below skip the upsert
+# plus next-round-prompt creation entirely on hard-block.
 _NEXT_ROUND_VERDICT_EXIT=0
-update_round_state_with_verdict "gated" "next_round" "$LOOP_DIR" "$NEXT_ROUND" "$NEXT_LAST_MAINLINE_VERDICT" \
+update_round_state_with_verdict "gated" "next_round" "$LOOP_DIR" "$CURRENT_ROUND" "$NEXT_LAST_MAINLINE_VERDICT" \
     || _NEXT_ROUND_VERDICT_EXIT=$?
 if [[ "$_NEXT_ROUND_VERDICT_EXIT" -eq 1 ]]; then
     _NEXT_ROUND_BLOCK_REASON="# Verdict Engine Hard-Block (Next Round Transition)
@@ -2060,6 +2066,16 @@ The artifact verdict engine refused to advance from round $CURRENT_ROUND to $NEX
         --arg msg "Loop: Blocked - verdict engine hard-block (next_round transition)" \
         '{"decision": "block", "reason": $reason, "systemMessage": $msg}'
     exit 0
+fi
+if [[ "$_NEXT_ROUND_VERDICT_EXIT" -eq 2 ]] && [[ -n "${VERDICT_ENGINE_DRIFT_INCREMENT:-}" ]] \
+        && [[ "${VERDICT_ENGINE_DRIFT_INCREMENT:-false}" == "true" ]]; then
+    # AC-5d: advisory-latency soft-warn increments the mainline drift
+    # counter so a sustained advisory regression eventually flips the
+    # circuit breaker even when Codex's textual verdict says ADVANCED.
+    NEXT_MAINLINE_STALL_COUNT=$((NEXT_MAINLINE_STALL_COUNT + 1))
+    if [[ "$NEXT_MAINLINE_STALL_COUNT" -ge 2 ]]; then
+        NEXT_DRIFT_STATUS="$DRIFT_STATUS_REPLAN_REQUIRED"
+    fi
 fi
 
 # Update state file for next round

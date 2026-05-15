@@ -857,4 +857,131 @@ else
     pass "AC-22: methodology-analysis.sh does not reference verdict engine"
 fi
 
+# ------------------------------------------------------------------
+# Hardening assertions (from Codex second-pass review)
+# ------------------------------------------------------------------
+
+# AC-1a integration: the stop-hook wrapper call at the next_round site must
+# pass CURRENT_ROUND (the round that just completed), not NEXT_ROUND. The
+# sidecar's `round` field pins to current_round at sidecar-write time;
+# passing NEXT_ROUND looks up a sidecar that does not yet exist.
+if grep -E '"gated" "next_round" "\$LOOP_DIR" "\$CURRENT_ROUND"' "$STOP_HOOK" >/dev/null; then
+    pass "AC-1a integration: next_round wrapper passes CURRENT_ROUND"
+else
+    fail "AC-1a integration: next_round wrapper must pass CURRENT_ROUND, not NEXT_ROUND"
+fi
+if grep -E '"gated" "next_round" "\$LOOP_DIR" "\$NEXT_ROUND"' "$STOP_HOOK" >/dev/null; then
+    fail "AC-1a integration: stale NEXT_ROUND wrapper call present"
+else
+    pass "AC-1a integration: no stale NEXT_ROUND wrapper call"
+fi
+
+# AC-1b integration: review_fix wrapper call must use CURRENT_ROUND (the
+# round whose review was just run), not the function's local $round (which
+# is CURRENT_ROUND + 1 and would look up a non-existent sidecar).
+if grep -E '"gated" "review_fix" "\$LOOP_DIR" "\$CURRENT_ROUND"' "$STOP_HOOK" >/dev/null; then
+    pass "AC-1b integration: review_fix wrapper passes CURRENT_ROUND"
+else
+    fail "AC-1b integration: review_fix wrapper must pass CURRENT_ROUND, not target round"
+fi
+
+# AC-5d drift increment: the wrapper exports VERDICT_ENGINE_DRIFT_INCREMENT
+# on soft-warn so the next_round caller bumps NEXT_MAINLINE_STALL_COUNT.
+WRAPPER_DRIFT_TMP=$(mktemp -d)
+WRAPPER_DRIFT_LOOP=$(setup_test_env "$WRAPPER_DRIFT_TMP")
+make_sidecar "$WRAPPER_DRIFT_LOOP" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"latency": {"required": false, "delta_pct": -15.0, "threshold_pct": null, "basis": "cupti_activity"}}' >/dev/null
+WRAPPER_DRIFT_OUT=$(
+    bash -c "
+        source '$WRAPPER_FILE' 2>/dev/null
+        update_round_state_with_verdict gated next_round '$WRAPPER_DRIFT_LOOP' 1
+        rc=\$?
+        echo \"rc=\$rc drift=\$VERDICT_ENGINE_DRIFT_INCREMENT\"
+    " 2>/dev/null | tail -1
+)
+if [[ "$WRAPPER_DRIFT_OUT" == "rc=2 drift=true" ]]; then
+    pass "AC-5d: wrapper exports VERDICT_ENGINE_DRIFT_INCREMENT=true on soft-warn"
+else
+    fail "AC-5d: drift export wrong (got: $WRAPPER_DRIFT_OUT)"
+fi
+
+WRAPPER_DRIFT_CLEAR_TMP=$(mktemp -d)
+WRAPPER_DRIFT_CLEAR_LOOP=$(setup_test_env "$WRAPPER_DRIFT_CLEAR_TMP")
+make_sidecar "$WRAPPER_DRIFT_CLEAR_LOOP" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+WRAPPER_DRIFT_CLEAR_OUT=$(
+    bash -c "
+        source '$WRAPPER_FILE' 2>/dev/null
+        update_round_state_with_verdict gated next_round '$WRAPPER_DRIFT_CLEAR_LOOP' 1
+        rc=\$?
+        echo \"rc=\$rc drift=\$VERDICT_ENGINE_DRIFT_INCREMENT\"
+    " 2>/dev/null | tail -1
+)
+if [[ "$WRAPPER_DRIFT_CLEAR_OUT" == "rc=0 drift=false" ]]; then
+    pass "AC-5d: wrapper clears VERDICT_ENGINE_DRIFT_INCREMENT on non-warn paths"
+else
+    fail "AC-5d: drift clear wrong (got: $WRAPPER_DRIFT_CLEAR_OUT)"
+fi
+cleanup_env "$WRAPPER_DRIFT_TMP"
+cleanup_env "$WRAPPER_DRIFT_CLEAR_TMP"
+
+# AC-6 hardening: a sidecar that omits a rule entry but marks the rule
+# required by objective must hard-block under rule_not_evaluated. This
+# catches the failure mode where dropping a rule from the JSON would
+# silently bypass the 9-rule contract.
+TMP_R1=$(mktemp -d)
+LOOP_R1=$(setup_test_env "$TMP_R1")
+make_sidecar "$LOOP_R1" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"rule_required_by_objective": {"rule_1_no_ncu": true}}' >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['rule_compliance'].pop('rule_1_no_ncu'); json.dump(d, open(p,'w'))" "$LOOP_R1/round-1-objectives.json"
+rc=$(run_engine "$TMP_R1" "$LOOP_R1" 1)
+if [[ "$rc" == "1" ]]; then
+    pass "AC-6 hardening: missing required rule entry -> exit 1"
+else
+    fail "AC-6 hardening: missing required rule entry exit $rc, expected 1"
+fi
+cleanup_env "$TMP_R1"
+
+# AC-6 hardening: an invalid rule status string (e.g., "VIOLATED" wrong
+# case) on a required rule is treated as not_evaluated and hard-blocks.
+TMP_R2=$(mktemp -d)
+LOOP_R2=$(setup_test_env "$TMP_R2")
+make_sidecar "$LOOP_R2" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"rule_compliance": {"rule_1_no_ncu": {"status": "INVALID_VALUE", "evidence": null}}, "rule_required_by_objective": {"rule_1_no_ncu": true}}' >/dev/null
+rc=$(run_engine "$TMP_R2" "$LOOP_R2" 1)
+if [[ "$rc" == "1" ]]; then
+    pass "AC-6 hardening: invalid status + required -> exit 1"
+else
+    fail "AC-6 hardening: invalid status + required exit $rc, expected 1"
+fi
+cleanup_env "$TMP_R2"
+
+# AC-6 hardening: invalid status on a NON-required rule does not block.
+TMP_R3=$(mktemp -d)
+LOOP_R3=$(setup_test_env "$TMP_R3")
+make_sidecar "$LOOP_R3" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"rule_compliance": {"rule_1_no_ncu": {"status": "INVALID_VALUE", "evidence": null}}}' >/dev/null
+rc=$(run_engine "$TMP_R3" "$LOOP_R3" 1)
+if [[ "$rc" == "0" ]]; then
+    pass "AC-6 hardening: invalid status + not required -> exit 0 (ledger only)"
+else
+    fail "AC-6 hardening: invalid status + not required exit $rc, expected 0"
+fi
+cleanup_env "$TMP_R3"
+
+# AC-15 extended: additional artifact names that a sloppy hard-block
+# implementation could create. Mutation-ordering must leave these absent.
+TMP_M15=$(mktemp -d)
+LOOP_M15=$(setup_test_env "$TMP_M15")
+make_sidecar "$LOOP_M15" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"correctness": {"passed": false}}' >/dev/null
+run_engine "$TMP_M15" "$LOOP_M15" 1 >/dev/null
+for name in round-2-summary.md round-2-contract.md round-2-review-prompt.md round-2-review-result.md .review-phase-started finalize-summary.md state.md.tmp; do
+    if compgen -G "$LOOP_M15/$name*" >/dev/null; then
+        fail "AC-15 extended: hard-block created forbidden artifact matching $name"
+    else
+        pass "AC-15 extended: hard-block did not create $name"
+    fi
+done
+cleanup_env "$TMP_M15"
+
 print_test_summary "Solbench Verdict Engine Tests"
