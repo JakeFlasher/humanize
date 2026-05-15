@@ -518,21 +518,23 @@ def _check_rule_compliance(
     """
     for rule_id in ALWAYS_HARD_BLOCK_RULES:
         status = _rule_status(rule_compliance, rule_id)
+        required = _is_rule_required(rule_required, rule_id)
         if status == "violated":
             return f"rule_violation:{rule_id}"
-        if status != "verified" and status != "violated" and _is_rule_required(rule_required, rule_id):
+        if status in (None, "not_evaluated") and required:
             return f"rule_not_evaluated:{rule_id}"
 
     for rule_id in CONDITIONAL_RULES:
         status = _rule_status(rule_compliance, rule_id)
+        required = _is_rule_required(rule_required, rule_id)
         if status == "violated":
-            if _is_rule_required(rule_required, rule_id):
+            if required:
                 return f"rule_violation:{rule_id}"
             entry = rule_compliance.get(rule_id, {})
             evidence = entry.get("evidence") if isinstance(entry, dict) else None
             if rule_id == "rule_9_iiswc_no_access" and isinstance(evidence, str) and evidence.strip():
                 return f"rule_violation:{rule_id}"
-        if status != "verified" and status != "violated" and _is_rule_required(rule_required, rule_id):
+        if status in (None, "not_evaluated") and required:
             return f"rule_not_evaluated:{rule_id}"
 
     return None
@@ -570,6 +572,19 @@ def write_jsonl_row(progress_path: Path, row: Dict[str, Any]) -> None:
     encoded = json.dumps(row, sort_keys=True, ensure_ascii=False)
     with progress_path.open("a", encoding="utf-8") as fh:
         fh.write(encoded + "\n")
+
+
+def emit_metadata(row: Dict[str, Any]) -> None:
+    """Print three ``KEY=VALUE`` lines on stdout for the bash wrapper to
+    parse without spawning a second python3 interpreter. The values mirror
+    what was just written into the JSONL row, so the wrapper can populate
+    its export vars (``VERDICT_ENGINE_COMPUTED``,
+    ``VERDICT_ENGINE_BLOCK_REASON``, ``VERDICT_ENGINE_MISMATCH``) without
+    re-reading the file.
+    """
+    print(f"VERDICT_ENGINE_COMPUTED={row.get('computed_verdict') or 'unknown'}")
+    print(f"VERDICT_ENGINE_BLOCK_REASON={row.get('block_reason') or 'null'}")
+    print(f"VERDICT_ENGINE_MISMATCH={'true' if row.get('verdict_mismatch') else 'false'}")
 
 
 def _build_jsonl_row(
@@ -753,6 +768,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             terminal_reason=terminal_reason,
         )
         write_jsonl_row(progress_path(loop_dir), row)
+        emit_metadata(row)
         return 0
 
     sidecar_file = sidecar_path(loop_dir, round_number)
@@ -801,6 +817,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             terminal_reason=terminal_reason,
         )
         write_jsonl_row(progress_path(loop_dir), row)
+        emit_metadata(row)
         if mode == "logged_only":
             return 0
         sys.stderr.write(f"verdict engine: {exc.reason}: {exc}\n")
@@ -831,6 +848,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         terminal_reason=terminal_reason,
     )
     write_jsonl_row(progress_path(loop_dir), row)
+    emit_metadata(row)
 
     if mode == "logged_only":
         return 0

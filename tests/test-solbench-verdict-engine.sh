@@ -187,7 +187,7 @@ run_engine() {
     fi
 
     local rc=0
-    python3 "$ENGINE" "${args[@]}" 2>/dev/null || rc=$?
+    python3 "$ENGINE" "${args[@]}" >/dev/null 2>/dev/null || rc=$?
     printf '%d' "$rc"
 }
 
@@ -1048,7 +1048,7 @@ python3 "$ENGINE" \
     --loop-dir "$LOOP_STATE" \
     --round 2 \
     --state-file "$LOOP_STATE/state.md" \
-    --project-root "$TMP_STATE" 2>/dev/null || rc=$?
+    --project-root "$TMP_STATE" >/dev/null 2>/dev/null || rc=$?
 if [[ "$rc" == "1" ]]; then
     pass "AC-13 (round 1): sidecar round vs state.md current_round mismatch -> exit 1"
 else
@@ -1329,7 +1329,7 @@ LOOP_DEF_SF=$(setup_test_env "$TMP_DEF_SF" 2)
 make_sidecar "$LOOP_DEF_SF" 2 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
 sed -i 's/^current_round:.*/current_round: 7/' "$LOOP_DEF_SF/state.md"
 rc=0
-python3 "$ENGINE" --loop-dir "$LOOP_DEF_SF" --round 2 --project-root "$TMP_DEF_SF" 2>/dev/null || rc=$?
+python3 "$ENGINE" --loop-dir "$LOOP_DEF_SF" --round 2 --project-root "$TMP_DEF_SF" >/dev/null 2>/dev/null || rc=$?
 if [[ "$rc" == "1" ]]; then
     pass "AC-13 (round 2): default --state-file picks up state.md and detects mismatch"
 else
@@ -1351,7 +1351,7 @@ LOOP_NO_SF=$(setup_test_env "$TMP_NO_SF")
 make_sidecar "$LOOP_NO_SF" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
 rm -f "$LOOP_NO_SF/state.md"
 rc=0
-python3 "$ENGINE" --loop-dir "$LOOP_NO_SF" --round 1 --project-root "$TMP_NO_SF" 2>/dev/null || rc=$?
+python3 "$ENGINE" --loop-dir "$LOOP_NO_SF" --round 1 --project-root "$TMP_NO_SF" >/dev/null 2>/dev/null || rc=$?
 if [[ "$rc" == "1" ]]; then
     pass "AC-13 (round 2): missing state.md in adapter-active gated mode -> exit 1"
 else

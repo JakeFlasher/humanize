@@ -785,43 +785,20 @@ update_round_state_with_verdict() {
         args+=("--state-file" "$state_file")
     fi
 
-    local engine_exit=0
-    python3 "$engine_path" "${args[@]}" || engine_exit=$?
+    # Capture engine stdout in the same call that drives gating; the
+    # engine prints three KEY=VALUE metadata lines (see emit_metadata in
+    # solbench_verdict_engine.py) so the wrapper can populate the four
+    # export vars without spawning a second python3 interpreter.
+    local engine_output engine_exit=0
+    engine_output=$(python3 "$engine_path" "${args[@]}") || engine_exit=$?
 
-    # Extract scalar verdict metadata from the latest JSONL row. The row
-    # already exists regardless of exit code; on hard-block the caller
-    # ignores these (it must not mutate state.md per AC-15), on continue
-    # / soft-warn the caller persists them.
-    local progress="$loop_dir/solbench-progress.jsonl"
-    if [[ -f "$progress" ]]; then
-        local meta
-        meta=$(python3 - "$progress" <<'PY' 2>/dev/null
-import json, sys, pathlib
-path = pathlib.Path(sys.argv[1])
-try:
-    last = path.read_text(encoding="utf-8", errors="replace").splitlines()[-1]
-except (IndexError, OSError):
-    sys.exit(0)
-try:
-    row = json.loads(last)
-except json.JSONDecodeError:
-    sys.exit(0)
-cv = row.get("computed_verdict") or "unknown"
-br = row.get("block_reason") or "null"
-vm = "true" if row.get("verdict_mismatch") else "false"
-print(f"VERDICT_ENGINE_COMPUTED={cv}")
-print(f"VERDICT_ENGINE_BLOCK_REASON={br}")
-print(f"VERDICT_ENGINE_MISMATCH={vm}")
-PY
-) || meta=""
-        while IFS='=' read -r key value; do
-            case "$key" in
-                VERDICT_ENGINE_COMPUTED) VERDICT_ENGINE_COMPUTED="$value" ;;
-                VERDICT_ENGINE_BLOCK_REASON) VERDICT_ENGINE_BLOCK_REASON="$value" ;;
-                VERDICT_ENGINE_MISMATCH) VERDICT_ENGINE_MISMATCH="$value" ;;
-            esac
-        done <<< "$meta"
-    fi
+    while IFS='=' read -r key value; do
+        case "$key" in
+            VERDICT_ENGINE_COMPUTED) VERDICT_ENGINE_COMPUTED="$value" ;;
+            VERDICT_ENGINE_BLOCK_REASON) VERDICT_ENGINE_BLOCK_REASON="$value" ;;
+            VERDICT_ENGINE_MISMATCH) VERDICT_ENGINE_MISMATCH="$value" ;;
+        esac
+    done <<< "$engine_output"
 
     if [[ "$mode" == "logged_only" ]]; then
         return 0
@@ -835,6 +812,31 @@ PY
     fi
 
     return "$engine_exit"
+}
+
+# Emit a verdict-engine hard-block decision JSON and exit 0 so the stop
+# hook returns the block to Claude. Used by gated callers when
+# update_round_state_with_verdict returns 1. The caller must NOT mutate
+# state.md or create round artifacts before invoking this (AC-15).
+#
+# Arguments:
+#   $1 transition_label - documented transition name (next_round,
+#                         review_fix, enter_finalize).
+#   $2 detail_sentence  - one-sentence transition-specific phrasing for
+#                         the human-readable reason body.
+emit_verdict_hard_block() {
+    local transition_label="$1"
+    local detail_sentence="$2"
+    local reason="# Verdict Engine Hard-Block (${transition_label} Transition)
+
+${detail_sentence}
+
+Inspect the latest row of ${LOOP_DIR}/solbench-progress.jsonl for the specific block_reason; resolve the underlying artifact / correctness / required-surface / rule / sidecar issue and re-run."
+    jq -n \
+        --arg reason "$reason" \
+        --arg msg "Loop: Blocked - verdict engine hard-block (${transition_label} transition)" \
+        '{"decision": "block", "reason": $reason, "systemMessage": $msg}'
+    exit 0
 }
 
 # Persist the four AC-8 scalar verdict fields to a state file using the

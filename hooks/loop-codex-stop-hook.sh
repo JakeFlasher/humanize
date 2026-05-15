@@ -964,8 +964,6 @@ NEXT_ROUND=$((CURRENT_ROUND + 1))
 # - Review Phase: must continue until [P?] issues are cleared, regardless of iteration count
 if [[ "$IS_FINALIZE_PHASE" != "true" ]] && [[ "$REVIEW_STARTED" != "true" ]] && [[ $NEXT_ROUND -gt $MAX_ITERATIONS ]]; then
     echo "RLCR loop did not complete, but reached max iterations ($MAX_ITERATIONS). Exiting." >&2
-    # Logged-only: record the maxiter terminal transition in the per-loop
-    # JSONL ledger. Never blocks the intended termination.
     update_round_state_with_verdict "logged_only" "maxiter" "$LOOP_DIR" "$CURRENT_ROUND" || true
     # AC-8: stamp the four scalar verdict fields into state.md before any
     # downstream rename so the terminal maxiter-state.md / methodology
@@ -987,7 +985,6 @@ fi
 
 if [[ "$IS_FINALIZE_PHASE" == "true" ]]; then
     echo "Finalize Phase complete. All checks passed." >&2
-    # Logged-only: record the finalize-completion terminal transition.
     update_round_state_with_verdict "logged_only" "finalize_completion" "$LOOP_DIR" "$CURRENT_ROUND" || true
     # AC-8: stamp the scalar verdict fields into state.md before the
     # complete-state.md rename / methodology entry so the terminal state
@@ -1343,14 +1340,8 @@ enter_finalize_phase() {
     update_round_state_with_verdict "gated" "enter_finalize" "$LOOP_DIR" "$CURRENT_ROUND" \
         || _finalize_verdict_exit=$?
     if [[ "$_finalize_verdict_exit" -eq 1 ]]; then
-        local _finalize_block_reason="# Verdict Engine Hard-Block (Enter-Finalize Transition)
-
-The artifact verdict engine refused to enter the finalize phase. Inspect the latest row of $LOOP_DIR/solbench-progress.jsonl for the specific block_reason; the round-$CURRENT_ROUND objective sidecar reports an unresolved artifact-proven failure."
-        jq -n \
-            --arg reason "$_finalize_block_reason" \
-            --arg msg "Loop: Blocked - verdict engine hard-block (enter_finalize transition)" \
-            '{"decision": "block", "reason": $reason, "systemMessage": $msg}'
-        exit 0
+        emit_verdict_hard_block "Enter-Finalize" \
+            "The artifact verdict engine refused to enter the finalize phase; the round-$CURRENT_ROUND objective sidecar reports an unresolved artifact-proven failure."
     fi
 
     # Non-hard-block: persist the four scalar verdict fields BEFORE the
@@ -1555,14 +1546,8 @@ continue_review_loop_with_issues() {
     update_round_state_with_verdict "gated" "review_fix" "$LOOP_DIR" "$CURRENT_ROUND" \
         || _review_fix_verdict_exit=$?
     if [[ "$_review_fix_verdict_exit" -eq 1 ]]; then
-        local _review_fix_block_reason="# Verdict Engine Hard-Block (Review-Fix Transition)
-
-The artifact verdict engine refused to advance the review-fix loop into round $round. Inspect the latest row of $LOOP_DIR/solbench-progress.jsonl for the specific block_reason and resolve it before retrying."
-        jq -n \
-            --arg reason "$_review_fix_block_reason" \
-            --arg msg "Loop: Blocked - verdict engine hard-block (review_fix transition)" \
-            '{"decision": "block", "reason": $reason, "systemMessage": $msg}'
-        exit 0
+        emit_verdict_hard_block "Review-Fix" \
+            "The artifact verdict engine refused to advance the review-fix loop into round $round."
     fi
 
     # Update round number in state file via upsert so current_round and the
@@ -1945,7 +1930,6 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_COMPLETE" ]]; then
         # Max iterations check
         if [[ $CURRENT_ROUND -ge $MAX_ITERATIONS ]]; then
             echo "Codex review passed but at max iterations ($MAX_ITERATIONS). Terminating as MAXITER." >&2
-            # Logged-only: record the complete-at-maxiter terminal transition.
             update_round_state_with_verdict "logged_only" "complete_at_maxiter" "$LOOP_DIR" "$CURRENT_ROUND" "$MAINLINE_VERDICT_ADVANCED" || true
             # AC-8: stamp the scalar verdict fields before
             # methodology/end_loop renames the state file.
@@ -1969,7 +1953,6 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_COMPLETE" ]]; then
         else
             echo "Implementation complete. Entering Review Phase..." >&2
 
-            # Logged-only: record the review-start state-update transition.
             update_round_state_with_verdict "logged_only" "review_start" "$LOOP_DIR" "$CURRENT_ROUND" "$MAINLINE_VERDICT_ADVANCED" || true
 
             # Update state to indicate review phase has started and clear drift counters.
@@ -2057,7 +2040,6 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_STOP" ]]; then
         echo "  $REVIEW_RESULT_FILE" >&2
     fi
     echo "========================================" >&2
-    # Logged-only: record the STOP-marker terminal transition.
     update_round_state_with_verdict "logged_only" "stop_marker" "$LOOP_DIR" "$CURRENT_ROUND" || true
     # AC-8: stamp the scalar verdict fields before
     # methodology/end_loop renames the state file to stop-state.md.
@@ -2086,14 +2068,8 @@ _NEXT_ROUND_VERDICT_EXIT=0
 update_round_state_with_verdict "gated" "next_round" "$LOOP_DIR" "$CURRENT_ROUND" "$NEXT_LAST_MAINLINE_VERDICT" \
     || _NEXT_ROUND_VERDICT_EXIT=$?
 if [[ "$_NEXT_ROUND_VERDICT_EXIT" -eq 1 ]]; then
-    _NEXT_ROUND_BLOCK_REASON="# Verdict Engine Hard-Block (Next Round Transition)
-
-The artifact verdict engine refused to advance from round $CURRENT_ROUND to $NEXT_ROUND. Inspect the latest row of $LOOP_DIR/solbench-progress.jsonl for the specific block_reason; fix the underlying artifact / correctness / required-surface / rule / sidecar issue and re-run."
-    jq -n \
-        --arg reason "$_NEXT_ROUND_BLOCK_REASON" \
-        --arg msg "Loop: Blocked - verdict engine hard-block (next_round transition)" \
-        '{"decision": "block", "reason": $reason, "systemMessage": $msg}'
-    exit 0
+    emit_verdict_hard_block "Next Round" \
+        "The artifact verdict engine refused to advance from round $CURRENT_ROUND to $NEXT_ROUND."
 fi
 if [[ "$_NEXT_ROUND_VERDICT_EXIT" -eq 2 ]] && [[ -n "${VERDICT_ENGINE_DRIFT_INCREMENT:-}" ]] \
         && [[ "${VERDICT_ENGINE_DRIFT_INCREMENT:-false}" == "true" ]]; then
