@@ -716,6 +716,67 @@ upsert_state_fields() {
     ' "$state_file" > "$temp_file" && mv "$temp_file" "$state_file"
 }
 
+# Run the artifact verdict engine before a gated or logged-only state
+# transition. The engine reads the per-round objective sidecar at
+# .humanize/rlcr/<loop>/round-<N>-objectives.json, computes a verdict tuple
+# against the manifest the sidecar references, and appends one row to
+# .humanize/rlcr/<loop>/solbench-progress.jsonl. Per the documented contract,
+# this wrapper itself does NOT mutate state.md, rename state files, or create
+# next-round artifacts; on a gated hard-block it merely propagates the
+# engine's nonzero exit code so the caller skips its state mutation.
+#
+# Arguments:
+#   $1 mode            - "gated" or "logged_only"
+#   $2 transition      - documented transition name (next_round, review_fix,
+#                        enter_finalize, finalize_completion, stop_marker,
+#                        maxiter, mainline_drift, review_start,
+#                        complete_at_maxiter)
+#   $3 loop_dir        - path to the loop directory
+#   $4 round_number    - the round number this transition operates on
+#   $5 codex_verdict   - optional, normalized verdict string for mismatch
+#                        detection (advanced|stalled|regressed|unknown)
+#
+# Returns:
+#   gated: propagates the engine exit code (0=continue, 1=hard-block,
+#          2=soft-warn). The caller is responsible for refusing to mutate
+#          state on exit code 1.
+#   logged_only: always returns 0; the engine still records a JSONL row.
+update_round_state_with_verdict() {
+    local mode="$1"
+    local transition="$2"
+    local loop_dir="$3"
+    local round_number="$4"
+    local codex_verdict="${5:-}"
+
+    local engine_path="${LOOP_COMMON_DIR:-$(dirname "${BASH_SOURCE[0]:-$0}")}/solbench_verdict_engine.py"
+    if [[ ! -f "$engine_path" ]]; then
+        return 0
+    fi
+
+    if ! command -v python3 >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local args=(
+        "--loop-dir" "$loop_dir"
+        "--round" "$round_number"
+        "--transition" "$transition"
+        "--mode" "$mode"
+    )
+    if [[ -n "$codex_verdict" ]]; then
+        args+=("--codex-verdict" "$codex_verdict")
+    fi
+
+    local engine_exit=0
+    python3 "$engine_path" "${args[@]}" || engine_exit=$?
+
+    if [[ "$mode" == "logged_only" ]]; then
+        return 0
+    fi
+
+    return "$engine_exit"
+}
+
 # Detect review issues from codex review log file
 # Returns:
 #   0 - issues found (caller should continue review loop)

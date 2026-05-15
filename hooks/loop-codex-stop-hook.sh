@@ -964,6 +964,9 @@ NEXT_ROUND=$((CURRENT_ROUND + 1))
 # - Review Phase: must continue until [P?] issues are cleared, regardless of iteration count
 if [[ "$IS_FINALIZE_PHASE" != "true" ]] && [[ "$REVIEW_STARTED" != "true" ]] && [[ $NEXT_ROUND -gt $MAX_ITERATIONS ]]; then
     echo "RLCR loop did not complete, but reached max iterations ($MAX_ITERATIONS). Exiting." >&2
+    # Logged-only: record the maxiter terminal transition in the per-loop
+    # JSONL ledger. Never blocks the intended termination.
+    update_round_state_with_verdict "logged_only" "maxiter" "$LOOP_DIR" "$CURRENT_ROUND" || true
     # Try to enter methodology analysis phase before final exit
     if enter_methodology_analysis_phase "maxiter" "Reached max iterations ($MAX_ITERATIONS) without completion"; then
         exit 0
@@ -980,6 +983,8 @@ fi
 
 if [[ "$IS_FINALIZE_PHASE" == "true" ]]; then
     echo "Finalize Phase complete. All checks passed." >&2
+    # Logged-only: record the finalize-completion terminal transition.
+    update_round_state_with_verdict "logged_only" "finalize_completion" "$LOOP_DIR" "$CURRENT_ROUND" || true
     # Try to enter methodology analysis phase before final exit
     if enter_methodology_analysis_phase "complete" "All acceptance criteria met and code review passed"; then
         exit 0
@@ -1322,6 +1327,24 @@ enter_finalize_phase() {
     local skip_reason="$1"
     local system_msg="$2"
 
+    # Verdict engine gate. The hard-block path here must NOT rename
+    # state.md, NOT build the finalize prompt, and NOT exit 0 with a
+    # finalize block JSON; instead it emits a hard-block block JSON so
+    # the operator resolves the artifact issue before finalize is entered.
+    local _finalize_verdict_exit=0
+    update_round_state_with_verdict "gated" "enter_finalize" "$LOOP_DIR" "$CURRENT_ROUND" \
+        || _finalize_verdict_exit=$?
+    if [[ "$_finalize_verdict_exit" -eq 1 ]]; then
+        local _finalize_block_reason="# Verdict Engine Hard-Block (Enter-Finalize Transition)
+
+The artifact verdict engine refused to enter the finalize phase. Inspect the latest row of $LOOP_DIR/solbench-progress.jsonl for the specific block_reason; the round-$CURRENT_ROUND objective sidecar reports an unresolved artifact-proven failure."
+        jq -n \
+            --arg reason "$_finalize_block_reason" \
+            --arg msg "Loop: Blocked - verdict engine hard-block (enter_finalize transition)" \
+            '{"decision": "block", "reason": $reason, "systemMessage": $msg}'
+        exit 0
+    fi
+
     mv "$STATE_FILE" "$LOOP_DIR/finalize-state.md"
     echo "State file renamed to: $LOOP_DIR/finalize-state.md" >&2
 
@@ -1424,6 +1447,11 @@ stop_for_mainline_drift() {
     local stall_count="$1"
     local last_verdict="$2"
 
+    # Logged-only: record the mainline-drift terminal transition. The
+    # underlying upsert_state_fields call below is the canonical drift
+    # record; this row gives downstream tools structured evidence.
+    update_round_state_with_verdict "logged_only" "mainline_drift" "$LOOP_DIR" "$CURRENT_ROUND" "$last_verdict" || true
+
     upsert_state_fields "$STATE_FILE" \
         "${FIELD_MAINLINE_STALL_COUNT}=${stall_count}" \
         "${FIELD_LAST_MAINLINE_VERDICT}=${last_verdict}" \
@@ -1498,6 +1526,23 @@ continue_review_loop_with_issues() {
     local review_content="$2"
 
     echo "Code review found issues. Continuing review loop..." >&2
+
+    # Verdict engine gate before advancing the review-fix loop. On hard-block
+    # the wrapper has appended the JSONL row but we refuse the sed mutation
+    # and emit a block JSON so the operator fixes the artifact issue first.
+    local _review_fix_verdict_exit=0
+    update_round_state_with_verdict "gated" "review_fix" "$LOOP_DIR" "$round" \
+        || _review_fix_verdict_exit=$?
+    if [[ "$_review_fix_verdict_exit" -eq 1 ]]; then
+        local _review_fix_block_reason="# Verdict Engine Hard-Block (Review-Fix Transition)
+
+The artifact verdict engine refused to advance the review-fix loop into round $round. Inspect the latest row of $LOOP_DIR/solbench-progress.jsonl for the specific block_reason and resolve it before retrying."
+        jq -n \
+            --arg reason "$_review_fix_block_reason" \
+            --arg msg "Loop: Blocked - verdict engine hard-block (review_fix transition)" \
+            '{"decision": "block", "reason": $reason, "systemMessage": $msg}'
+        exit 0
+    fi
 
     # Update round number in state file
     local temp_file="${STATE_FILE}.tmp.$$"
@@ -1876,6 +1921,8 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_COMPLETE" ]]; then
         # Max iterations check
         if [[ $CURRENT_ROUND -ge $MAX_ITERATIONS ]]; then
             echo "Codex review passed but at max iterations ($MAX_ITERATIONS). Terminating as MAXITER." >&2
+            # Logged-only: record the complete-at-maxiter terminal transition.
+            update_round_state_with_verdict "logged_only" "complete_at_maxiter" "$LOOP_DIR" "$CURRENT_ROUND" "$MAINLINE_VERDICT_ADVANCED" || true
             if enter_methodology_analysis_phase "maxiter" "Codex confirmed COMPLETE but at max iterations ($MAX_ITERATIONS)"; then
                 exit 0
             fi
@@ -1894,6 +1941,9 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_COMPLETE" ]]; then
             REVIEW_SKIP_REASON="No base_branch configured for code review"
         else
             echo "Implementation complete. Entering Review Phase..." >&2
+
+            # Logged-only: record the review-start state-update transition.
+            update_round_state_with_verdict "logged_only" "review_start" "$LOOP_DIR" "$CURRENT_ROUND" "$MAINLINE_VERDICT_ADVANCED" || true
 
             # Update state to indicate review phase has started and clear drift counters.
             upsert_state_fields "$STATE_FILE" \
@@ -1979,6 +2029,8 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_STOP" ]]; then
         echo "  $REVIEW_RESULT_FILE" >&2
     fi
     echo "========================================" >&2
+    # Logged-only: record the STOP-marker terminal transition.
+    update_round_state_with_verdict "logged_only" "stop_marker" "$LOOP_DIR" "$CURRENT_ROUND" || true
     # Try to enter methodology analysis phase before final exit
     if enter_methodology_analysis_phase "stop" "Circuit breaker triggered - stagnation detected at round $CURRENT_ROUND"; then
         exit 0
@@ -1990,6 +2042,25 @@ fi
 # ========================================
 # Review Found Issues - Continue Loop
 # ========================================
+
+# Verdict engine gate: refuse to advance to the next round on an
+# artifact-proven correctness / required-surface / required-latency /
+# leaderboard-comparable / rule-violation block. Mutation ordering: emit
+# the JSONL row only, leave state.md untouched, and let the caller below
+# skip the upsert + next-round-prompt creation entirely.
+_NEXT_ROUND_VERDICT_EXIT=0
+update_round_state_with_verdict "gated" "next_round" "$LOOP_DIR" "$NEXT_ROUND" "$NEXT_LAST_MAINLINE_VERDICT" \
+    || _NEXT_ROUND_VERDICT_EXIT=$?
+if [[ "$_NEXT_ROUND_VERDICT_EXIT" -eq 1 ]]; then
+    _NEXT_ROUND_BLOCK_REASON="# Verdict Engine Hard-Block (Next Round Transition)
+
+The artifact verdict engine refused to advance from round $CURRENT_ROUND to $NEXT_ROUND. Inspect the latest row of $LOOP_DIR/solbench-progress.jsonl for the specific block_reason; fix the underlying artifact / correctness / required-surface / rule / sidecar issue and re-run."
+    jq -n \
+        --arg reason "$_NEXT_ROUND_BLOCK_REASON" \
+        --arg msg "Loop: Blocked - verdict engine hard-block (next_round transition)" \
+        '{"decision": "block", "reason": $reason, "systemMessage": $msg}'
+    exit 0
+fi
 
 # Update state file for next round
 upsert_state_fields "$STATE_FILE" \

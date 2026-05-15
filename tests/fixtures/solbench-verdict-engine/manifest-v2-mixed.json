@@ -1,0 +1,49 @@
+{
+  "schema_version": "2.0",
+  "loop_id": "fixture-loop",
+  "round": 1,
+  "host": {
+    "kernel": "linux",
+    "tools": {
+      "ncu": "absent",
+      "nsys": "present"
+    }
+  },
+  "surfaces": [
+    {
+      "name": "nvbit",
+      "status": "ok",
+      "waiver_reason": null,
+      "substatus": null,
+      "evidence_label_contribution": "trace-derived"
+    },
+    {
+      "name": "cupti_activity",
+      "status": "blocked",
+      "waiver_reason": "non-root container",
+      "substatus": "privileged_required",
+      "evidence_label_contribution": "counter-free-unavailable"
+    },
+    {
+      "name": "nsys",
+      "status": "ok",
+      "waiver_reason": null,
+      "substatus": null,
+      "evidence_label_contribution": "calibrated-estimate"
+    },
+    {
+      "name": "static",
+      "status": "failed",
+      "waiver_reason": null,
+      "substatus": "parser_error",
+      "evidence_label_contribution": "exact-launch-or-static"
+    },
+    {
+      "name": "sanitizer",
+      "status": "ok",
+      "waiver_reason": null,
+      "substatus": null,
+      "evidence_label_contribution": "proxy-only"
+    }
+  ]
+}

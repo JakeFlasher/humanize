@@ -67,6 +67,7 @@ TEST_SUITES=(
     "test-stop-gate.sh"
     "test-templates-comprehensive.sh"
     "test-kb-provenance-format.sh"
+    "test-solbench-verdict-engine.sh"
     "test-plan-file-hooks.sh"
     "test-stop-hook-legacy-compat.sh"
     "test-stop-hook-bg-allow.sh"

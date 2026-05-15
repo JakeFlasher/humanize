@@ -111,3 +111,73 @@ Review phase `codex review` runs with `gpt-5.5:high`.
 ```bash
 "{{HUMANIZE_RUNTIME_ROOT}}/scripts/cancel-rlcr-loop.sh"
 ```
+
+## Artifact Verdict Engine (Optional Adapter)
+
+The native Stop-hook path includes an artifact-driven verdict engine
+(`hooks/lib/solbench_verdict_engine.py`) gated by a structured per-round
+objective sidecar. When the verdict adapter is active, every state-update
+transition routes through `update_round_state_with_verdict()` in
+`hooks/lib/loop-common.sh`, which invokes the engine before the original
+state mutation and emits one row to
+`.humanize/rlcr/<loop>/solbench-progress.jsonl`.
+
+### Sidecar Contract
+
+Loops that want artifact-driven gating MUST emit a sidecar at
+`.humanize/rlcr/<loop>/round-<N>-objectives.json` before exiting each round.
+The full schema is in `docs/solbench-verdict-engine-schema.md`. Required
+top-level keys:
+
+- Identity block: `schema_version` (must be `"1.0"`), `loop_id`, `round`,
+  `adapter`, `objective_id`, `objective_hash`, `manifest_path`,
+  `manifest_hash`, `generated_at` (RFC 3339).
+- `correctness`: `{passed: bool, tests_passed: int, tests_failed: int}`.
+- `latency`: `{required: bool, delta_pct: float, threshold_pct: float|null,
+  basis: str}`.
+- `sol_score`: nested provenance: `{value: float|"unknown_t_sol",
+  provenance: {authority, basis, leaderboard_comparable}}`.
+- `leaderboard_comparable_required`: bool opt-in for hard-blocking on
+  unknown SOL score.
+- `required_surfaces`: list of surface names whose manifest `status=="failed"`
+  hard-blocks.
+- `ac_deltas`: free-form dict; forwarded verbatim.
+- `rule_compliance`: 9 rule entries with `{status, evidence}`; status enum
+  is `{verified, violated, not_evaluated}`.
+- `rule_required_by_objective`: per-rule opt-in (short alias keys like
+  `rule_7`).
+
+### Engine Semantics
+
+- Hard-block (exit 1): correctness failure, required-surface failure,
+  required-latency threshold breach, leaderboard-comparable-required +
+  unknown SOL score, rule violations per the severity partition (Rules 1-6
+  and 8 always hard-block on violated; Rule 7 conditional on
+  `rule_required_by_objective.rule_7` or machine-proof; Rule 9 conditional
+  on transcript evidence), or sidecar identity validation failure.
+- Soft-warn (exit 2): advisory latency regression beyond a heuristic
+  threshold. The JSONL row carries `verdict_warned=true`; the wrapper still
+  allows the caller to proceed.
+- Continue (exit 0): all gates clear; the wrapper returns and the caller
+  performs the original state mutation.
+
+### Adapter Detection
+
+The engine fail-opens (emits a `mode=skipped_no_adapter` row, exit 0) only
+when ALL three predicates are negative:
+
+1. `.humanize/adapter-config.json` absent or does not declare a known
+   adapter.
+2. `.claude/knowledge/problems/` absent or contains zero `.md` files.
+3. No `round-<N>-objectives.json` file in the loop directory.
+
+Any positive predicate flips the engine into fail-closed mode; an absent or
+malformed sidecar then hard-blocks the gated transition.
+
+### Mutation Ordering
+
+On hard-block the wrapper appends one JSONL row and refuses to mutate
+`state.md`, rename state files, or generate next-round / finalize prompts.
+The caller emits a block decision JSON so the loop pauses at the current
+round until the underlying artifact / correctness / surface / rule issue
+is resolved.
