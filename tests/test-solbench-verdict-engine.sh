@@ -1474,4 +1474,118 @@ else
 fi
 cleanup_env "$TMP_P_NM"
 
+# ------------------------------------------------------------------
+# Round 3 hardening assertions (post Round-2 Codex review)
+# ------------------------------------------------------------------
+
+# AC-3 (round 3): v1 enum enforcement on provenance.authority and basis.
+# Unsupported values must hard-block.
+TMP_AUTH_BAD=$(mktemp -d)
+LOOP_AUTH_BAD=$(setup_test_env "$TMP_AUTH_BAD")
+make_sidecar "$LOOP_AUTH_BAD" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"sol_score": {"value": 0.73, "provenance": {"authority": "bogus_authority", "basis": "solar_stage4_registered", "leaderboard_comparable": true}}}' >/dev/null
+rc=$(run_engine "$TMP_AUTH_BAD" "$LOOP_AUTH_BAD" 1)
+row_a_bad=$(last_jsonl_row "$LOOP_AUTH_BAD")
+if [[ "$rc" == "1" ]]; then
+    pass "AC-3 (round 3): unsupported provenance.authority -> exit 1"
+else
+    fail "AC-3 (round 3): bogus authority exit $rc, expected 1"
+fi
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_provenance_bad_authority'" "$row_a_bad" 2>/dev/null; then
+    pass "AC-3 (round 3): bogus authority block_reason=sol_score_provenance_bad_authority"
+else
+    fail "AC-3 (round 3): bogus authority block_reason wrong"
+fi
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['computed_verdict']!='advanced'" "$row_a_bad" 2>/dev/null; then
+    pass "AC-3 (round 3): bogus authority does not emit advancing row"
+else
+    fail "AC-3 (round 3): bogus authority emitted advancing row"
+fi
+cleanup_env "$TMP_AUTH_BAD"
+
+TMP_BASIS_BAD=$(mktemp -d)
+LOOP_BASIS_BAD=$(setup_test_env "$TMP_BASIS_BAD")
+make_sidecar "$LOOP_BASIS_BAD" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"sol_score": {"value": 0.73, "provenance": {"authority": "local_proxy_5060", "basis": "bogus_basis", "leaderboard_comparable": true}}}' >/dev/null
+rc=$(run_engine "$TMP_BASIS_BAD" "$LOOP_BASIS_BAD" 1)
+row_b_bad=$(last_jsonl_row "$LOOP_BASIS_BAD")
+if [[ "$rc" == "1" ]]; then
+    pass "AC-3 (round 3): unsupported provenance.basis -> exit 1"
+else
+    fail "AC-3 (round 3): bogus basis exit $rc, expected 1"
+fi
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_provenance_bad_basis'" "$row_b_bad" 2>/dev/null; then
+    pass "AC-3 (round 3): bogus basis block_reason=sol_score_provenance_bad_basis"
+else
+    fail "AC-3 (round 3): bogus basis block_reason wrong"
+fi
+cleanup_env "$TMP_BASIS_BAD"
+
+# AC-3 (round 3): supported enum values still advance. Test both the
+# stage4-registered and stage4-missing basis values against both
+# supported authority values.
+for combo in \
+    "local_proxy_5060,solar_stage4_missing" \
+    "local_proxy_5060,solar_stage4_registered" \
+    "solar_stage4_registered,solar_stage4_registered"; do
+    IFS=',' read -r authority basis <<< "$combo"
+    TMP_OK=$(mktemp -d)
+    LOOP_OK=$(setup_test_env "$TMP_OK")
+    make_sidecar "$LOOP_OK" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+        "{\"sol_score\": {\"value\": 0.73, \"provenance\": {\"authority\": \"$authority\", \"basis\": \"$basis\", \"leaderboard_comparable\": true}}}" >/dev/null
+    rc=$(run_engine "$TMP_OK" "$LOOP_OK" 1)
+    if [[ "$rc" == "0" ]]; then
+        pass "AC-3 (round 3): supported provenance ($authority/$basis) -> exit 0"
+    else
+        fail "AC-3 (round 3): supported provenance ($authority/$basis) -> exit $rc, expected 0"
+    fi
+    cleanup_env "$TMP_OK"
+done
+
+# AC-8 (round 3): persist_verdict_scalar_fields is called near every
+# logged-only terminal site, in addition to the 4 gated sites. Lock each
+# of the 5 logged-only terminals separately so a future refactor that
+# drops one cannot pass silently.
+for phase_marker in maxiter finalize_completion mainline_drift complete_at_maxiter stop_marker; do
+    persist_lines=$(grep -n 'persist_verdict_scalar_fields ' "$STOP_HOOK" | awk -F: '{print $1}')
+    # Phase line: prefer the logged_only wrapper call for this transition.
+    phase_line=$(grep -nE "\"logged_only\" \"$phase_marker\"" "$STOP_HOOK" | head -1 | awk -F: '{print $1}')
+    if [[ -z "$phase_line" ]]; then
+        fail "AC-8 (round 3): could not locate logged_only $phase_marker wrapper call"
+        continue
+    fi
+    found_pair=false
+    for pl in $persist_lines; do
+        diff=$(( pl - phase_line ))
+        # persist should follow the wrapper call within 30 lines (in
+        # practice it's 2-5 lines after).
+        if [[ "$diff" -ge 0 ]] && [[ "$diff" -le 30 ]]; then
+            found_pair=true
+            break
+        fi
+    done
+    if [[ "$found_pair" == "true" ]]; then
+        pass "AC-8 (round 3): persist helper follows logged_only $phase_marker wrapper within 30 lines"
+    else
+        fail "AC-8 (round 3): persist helper missing after logged_only $phase_marker wrapper"
+    fi
+done
+
+# AC-8 (round 3): total persist call count is now 4 gated + 5 logged-only
+# terminal = 9.
+total_persist=$(grep -c 'persist_verdict_scalar_fields ' "$STOP_HOOK")
+if [[ "$total_persist" -ge 9 ]]; then
+    pass "AC-8 (round 3): total persist call count >=9 (got $total_persist)"
+else
+    fail "AC-8 (round 3): expected >=9 persist calls (4 gated + 5 logged-only), got $total_persist"
+fi
+
+# AC-1e / AC-22 still holds: methodology-analysis.sh has zero verdict /
+# persist references.
+if grep -qE 'persist_verdict_scalar_fields|update_round_state_with_verdict|solbench_verdict_engine' "$METHODOLOGY_HOOK"; then
+    fail "AC-1e/AC-22 (round 3): methodology-analysis.sh references the verdict engine / wrapper / persist"
+else
+    pass "AC-1e/AC-22 (round 3): methodology-analysis.sh remains untouched after persist proliferation"
+fi
+
 print_test_summary "Solbench Verdict Engine Tests"

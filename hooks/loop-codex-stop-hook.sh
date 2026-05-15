@@ -967,6 +967,10 @@ if [[ "$IS_FINALIZE_PHASE" != "true" ]] && [[ "$REVIEW_STARTED" != "true" ]] && 
     # Logged-only: record the maxiter terminal transition in the per-loop
     # JSONL ledger. Never blocks the intended termination.
     update_round_state_with_verdict "logged_only" "maxiter" "$LOOP_DIR" "$CURRENT_ROUND" || true
+    # AC-8: stamp the four scalar verdict fields into state.md before any
+    # downstream rename so the terminal maxiter-state.md / methodology
+    # state file carries the latest verdict metadata.
+    persist_verdict_scalar_fields "$STATE_FILE"
     # Try to enter methodology analysis phase before final exit
     if enter_methodology_analysis_phase "maxiter" "Reached max iterations ($MAX_ITERATIONS) without completion"; then
         exit 0
@@ -985,6 +989,10 @@ if [[ "$IS_FINALIZE_PHASE" == "true" ]]; then
     echo "Finalize Phase complete. All checks passed." >&2
     # Logged-only: record the finalize-completion terminal transition.
     update_round_state_with_verdict "logged_only" "finalize_completion" "$LOOP_DIR" "$CURRENT_ROUND" || true
+    # AC-8: stamp the scalar verdict fields into state.md before the
+    # complete-state.md rename / methodology entry so the terminal state
+    # carries the latest verdict metadata.
+    persist_verdict_scalar_fields "$STATE_FILE"
     # Try to enter methodology analysis phase before final exit
     if enter_methodology_analysis_phase "complete" "All acceptance criteria met and code review passed"; then
         exit 0
@@ -1457,6 +1465,10 @@ stop_for_mainline_drift() {
     # underlying upsert_state_fields call below is the canonical drift
     # record; this row gives downstream tools structured evidence.
     update_round_state_with_verdict "logged_only" "mainline_drift" "$LOOP_DIR" "$CURRENT_ROUND" "$last_verdict" || true
+    # AC-8: stamp the scalar verdict fields before the drift upsert and
+    # the subsequent end_loop so the terminal stop-state.md carries
+    # both the drift fields and the latest verdict metadata.
+    persist_verdict_scalar_fields "$STATE_FILE"
 
     upsert_state_fields "$STATE_FILE" \
         "${FIELD_MAINLINE_STALL_COUNT}=${stall_count}" \
@@ -1935,6 +1947,9 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_COMPLETE" ]]; then
             echo "Codex review passed but at max iterations ($MAX_ITERATIONS). Terminating as MAXITER." >&2
             # Logged-only: record the complete-at-maxiter terminal transition.
             update_round_state_with_verdict "logged_only" "complete_at_maxiter" "$LOOP_DIR" "$CURRENT_ROUND" "$MAINLINE_VERDICT_ADVANCED" || true
+            # AC-8: stamp the scalar verdict fields before
+            # methodology/end_loop renames the state file.
+            persist_verdict_scalar_fields "$STATE_FILE"
             if enter_methodology_analysis_phase "maxiter" "Codex confirmed COMPLETE but at max iterations ($MAX_ITERATIONS)"; then
                 exit 0
             fi
@@ -2044,6 +2059,9 @@ if [[ "$LAST_LINE_TRIMMED" == "$MARKER_STOP" ]]; then
     echo "========================================" >&2
     # Logged-only: record the STOP-marker terminal transition.
     update_round_state_with_verdict "logged_only" "stop_marker" "$LOOP_DIR" "$CURRENT_ROUND" || true
+    # AC-8: stamp the scalar verdict fields before
+    # methodology/end_loop renames the state file to stop-state.md.
+    persist_verdict_scalar_fields "$STATE_FILE"
     # Try to enter methodology analysis phase before final exit
     if enter_methodology_analysis_phase "stop" "Circuit breaker triggered - stagnation detected at round $CURRENT_ROUND"; then
         exit 0

@@ -30,6 +30,14 @@ from typing import Any, Dict, List, Optional, Tuple
 SCHEMA_VERSION = "1.0"
 SIDECAR_SCHEMA_VERSION = "1.0"
 SUPPORTED_ADAPTERS = {"solbench"}
+VALID_PROVENANCE_AUTHORITIES = {
+    "local_proxy_5060",
+    "solar_stage4_registered",
+}
+VALID_PROVENANCE_BASES = {
+    "solar_stage4_registered",
+    "solar_stage4_missing",
+}
 ALWAYS_HARD_BLOCK_RULES = {
     "rule_1_no_ncu",
     "rule_2_no_clock_lock",
@@ -373,6 +381,10 @@ def _validate_sol_score(sidecar: Dict[str, Any]) -> Optional[str]:
         entry = provenance.get(key)
         if not isinstance(entry, str) or not entry.strip():
             return f"sol_score_provenance_bad_{key}"
+    if provenance["authority"] not in VALID_PROVENANCE_AUTHORITIES:
+        return "sol_score_provenance_bad_authority"
+    if provenance["basis"] not in VALID_PROVENANCE_BASES:
+        return "sol_score_provenance_bad_basis"
     if not isinstance(provenance.get("leaderboard_comparable"), bool):
         return "sol_score_provenance_bad_leaderboard_comparable"
     return None
