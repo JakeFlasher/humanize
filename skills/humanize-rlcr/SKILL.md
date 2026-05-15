@@ -129,9 +129,10 @@ Loops that want artifact-driven gating MUST emit a sidecar at
 The full schema is in `docs/solbench-verdict-engine-schema.md`. Required
 top-level keys:
 
-- Identity block: `schema_version` (must be `"1.0"`), `loop_id`, `round`,
-  `adapter`, `objective_id`, `objective_hash`, `manifest_path`,
-  `manifest_hash`, `generated_at` (RFC 3339).
+- Identity block: `sidecar_schema_version` (must be `"1.0"`; distinct from
+  the JSONL row's `schema_version`), `loop_id`, `round`, `adapter`,
+  `objective_id`, `objective_hash`, `manifest_path`, `manifest_hash`,
+  `generated_at` (RFC 3339).
 - `correctness`: `{passed: bool, tests_passed: int, tests_failed: int}`.
 - `latency`: `{required: bool, delta_pct: float, threshold_pct: float|null,
   basis: str}`.
@@ -173,6 +174,25 @@ when ALL three predicates are negative:
 
 Any positive predicate flips the engine into fail-closed mode; an absent or
 malformed sidecar then hard-blocks the gated transition.
+
+### State Frontmatter Scalar Fields
+
+`state.md` frontmatter carries four scalar verdict fields (set by
+`setup-rlcr-loop.sh` to safe defaults at loop start, then updated by the
+gated `next_round` transition only when the engine does NOT hard-block):
+
+- `verdict_mismatch` (bool) - whether Codex's textual verdict disagreed
+  with the engine's computed verdict on the most recent transition.
+- `verdict_mismatch_count` (int) - cumulative number of mismatches across
+  the loop's lifetime; bumped each time `verdict_mismatch=true`.
+- `last_computed_verdict` (str) - one of `advanced`, `stalled`,
+  `regressed`, `blocked`, `unknown`.
+- `last_block_reason` (str|null) - canonical `block_reason` enum from the
+  most recent JSONL row (or `null` on a clean advance / soft-warn).
+
+Structured payload (the SOL score object, the manifest list, the
+`ac_deltas` dict, the 9-entry `rule_compliance` map) lives in the JSONL
+ledger only; state.md frontmatter never carries JSON-shaped value strings.
 
 ### Mutation Ordering
 

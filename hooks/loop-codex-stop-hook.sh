@@ -2078,12 +2078,27 @@ if [[ "$_NEXT_ROUND_VERDICT_EXIT" -eq 2 ]] && [[ -n "${VERDICT_ENGINE_DRIFT_INCR
     fi
 fi
 
+# AC-8 scalar verdict fields: read the prior verdict_mismatch_count from
+# state.md frontmatter and bump it when the engine flagged a mismatch.
+# These fields stay scalar so AC-8's "no JSON-shaped values in
+# frontmatter" assertion still holds.
+PRIOR_VERDICT_MISMATCH_COUNT=$(awk -F: '/^verdict_mismatch_count:/{gsub(/[[:space:]]+/,"",$2); print $2; exit}' "$STATE_FILE" 2>/dev/null)
+PRIOR_VERDICT_MISMATCH_COUNT="${PRIOR_VERDICT_MISMATCH_COUNT:-0}"
+NEXT_VERDICT_MISMATCH_COUNT="$PRIOR_VERDICT_MISMATCH_COUNT"
+if [[ "${VERDICT_ENGINE_MISMATCH:-false}" == "true" ]]; then
+    NEXT_VERDICT_MISMATCH_COUNT=$((PRIOR_VERDICT_MISMATCH_COUNT + 1))
+fi
+
 # Update state file for next round
 upsert_state_fields "$STATE_FILE" \
     "${FIELD_CURRENT_ROUND}=${NEXT_ROUND}" \
     "${FIELD_MAINLINE_STALL_COUNT}=${NEXT_MAINLINE_STALL_COUNT}" \
     "${FIELD_LAST_MAINLINE_VERDICT}=${NEXT_LAST_MAINLINE_VERDICT}" \
-    "${FIELD_DRIFT_STATUS}=${NEXT_DRIFT_STATUS}"
+    "${FIELD_DRIFT_STATUS}=${NEXT_DRIFT_STATUS}" \
+    "${FIELD_VERDICT_MISMATCH}=${VERDICT_ENGINE_MISMATCH:-false}" \
+    "${FIELD_VERDICT_MISMATCH_COUNT}=${NEXT_VERDICT_MISMATCH_COUNT}" \
+    "${FIELD_LAST_COMPUTED_VERDICT}=${VERDICT_ENGINE_COMPUTED:-unknown}" \
+    "${FIELD_LAST_BLOCK_REASON}=${VERDICT_ENGINE_BLOCK_REASON:-null}"
 
 # Create next round prompt
 NEXT_PROMPT_FILE="$LOOP_DIR/round-${NEXT_ROUND}-prompt.md"

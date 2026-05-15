@@ -62,6 +62,10 @@ session_id: test-session
 mainline_stall_count: 0
 last_mainline_verdict: advanced
 drift_status: normal
+verdict_mismatch: false
+verdict_mismatch_count: 0
+last_computed_verdict: unknown
+last_block_reason: null
 ---
 
 Test state.
@@ -100,7 +104,7 @@ objective_id = overrides.pop("objective_id", "test_objective")
 objective_hash = hashlib.sha256(objective_id.encode()).hexdigest()
 
 sidecar = {
-    "schema_version": "1.0",
+    "sidecar_schema_version": "1.0",
     "loop_id": loop_id,
     "round": round_num,
     "adapter": "solbench",
@@ -983,5 +987,247 @@ for name in round-2-summary.md round-2-contract.md round-2-review-prompt.md roun
     fi
 done
 cleanup_env "$TMP_M15"
+
+# ------------------------------------------------------------------
+# Round 1 hardening assertions (post Round-0 Codex review)
+# ------------------------------------------------------------------
+
+# AC-13: sidecar_schema_version is the required identity field. The JSONL
+# row still carries the unrelated schema_version="1.0" but identity is
+# validated against sidecar_schema_version.
+if grep -q '"sidecar_schema_version"' "$ENGINE"; then
+    pass "AC-13 (round 1): engine requires sidecar_schema_version"
+else
+    fail "AC-13 (round 1): engine missing sidecar_schema_version identity field"
+fi
+
+TMP_SV_MISS=$(mktemp -d)
+LOOP_SV_MISS=$(setup_test_env "$TMP_SV_MISS")
+make_sidecar "$LOOP_SV_MISS" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.pop('sidecar_schema_version'); json.dump(d, open(p,'w'))" "$LOOP_SV_MISS/round-1-objectives.json"
+rc=$(run_engine "$TMP_SV_MISS" "$LOOP_SV_MISS" 1)
+if [[ "$rc" == "1" ]]; then
+    pass "AC-13 (round 1): missing sidecar_schema_version -> exit 1"
+else
+    fail "AC-13 (round 1): missing sidecar_schema_version exit $rc, expected 1"
+fi
+row_sv=$(last_jsonl_row "$LOOP_SV_MISS")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sidecar_identity_invalid:missing_sidecar_schema_version'" "$row_sv" 2>/dev/null; then
+    pass "AC-13 (round 1): block_reason=sidecar_identity_invalid:missing_sidecar_schema_version"
+else
+    fail "AC-13 (round 1): missing-field reason wrong"
+fi
+cleanup_env "$TMP_SV_MISS"
+
+TMP_SV_WRONG=$(mktemp -d)
+LOOP_SV_WRONG=$(setup_test_env "$TMP_SV_WRONG")
+make_sidecar "$LOOP_SV_WRONG" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"sidecar_schema_version": "2.0"}' >/dev/null
+rc=$(run_engine "$TMP_SV_WRONG" "$LOOP_SV_WRONG" 1)
+if [[ "$rc" == "1" ]]; then
+    pass "AC-13 (round 1): wrong sidecar_schema_version -> exit 1"
+else
+    fail "AC-13 (round 1): wrong sidecar_schema_version exit $rc, expected 1"
+fi
+row_svw=$(last_jsonl_row "$LOOP_SV_WRONG")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sidecar_identity_invalid:bad_sidecar_schema_version'" "$row_svw" 2>/dev/null; then
+    pass "AC-13 (round 1): wrong sidecar_schema_version block_reason"
+else
+    fail "AC-13 (round 1): wrong sidecar_schema_version block_reason wrong"
+fi
+cleanup_env "$TMP_SV_WRONG"
+
+# AC-13 state.md cross-check via --state-file. Sidecar round == --round but
+# state.md frontmatter current_round disagrees -> hard-block.
+TMP_STATE=$(mktemp -d)
+LOOP_STATE=$(setup_test_env "$TMP_STATE" 2)
+make_sidecar "$LOOP_STATE" 2 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+sed -i 's/^current_round:.*/current_round: 5/' "$LOOP_STATE/state.md"
+rc=0
+python3 "$ENGINE" \
+    --loop-dir "$LOOP_STATE" \
+    --round 2 \
+    --state-file "$LOOP_STATE/state.md" \
+    --project-root "$TMP_STATE" 2>/dev/null || rc=$?
+if [[ "$rc" == "1" ]]; then
+    pass "AC-13 (round 1): sidecar round vs state.md current_round mismatch -> exit 1"
+else
+    fail "AC-13 (round 1): state mismatch exit $rc, expected 1"
+fi
+row_state=$(last_jsonl_row "$LOOP_STATE")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sidecar_identity_mismatch:state_round'" "$row_state" 2>/dev/null; then
+    pass "AC-13 (round 1): block_reason=sidecar_identity_mismatch:state_round"
+else
+    fail "AC-13 (round 1): state-mismatch reason wrong"
+fi
+cleanup_env "$TMP_STATE"
+
+# AC-3 hardening: missing sol_score block -> hard-block.
+TMP_SOL_MISS=$(mktemp -d)
+LOOP_SOL_MISS=$(setup_test_env "$TMP_SOL_MISS")
+make_sidecar "$LOOP_SOL_MISS" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d.pop('sol_score'); json.dump(d, open(p,'w'))" "$LOOP_SOL_MISS/round-1-objectives.json"
+rc=$(run_engine "$TMP_SOL_MISS" "$LOOP_SOL_MISS" 1)
+if [[ "$rc" == "1" ]]; then
+    pass "AC-3 (round 1): missing sol_score -> exit 1"
+else
+    fail "AC-3 (round 1): missing sol_score exit $rc, expected 1"
+fi
+row_sol=$(last_jsonl_row "$LOOP_SOL_MISS")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_missing'" "$row_sol" 2>/dev/null; then
+    pass "AC-3 (round 1): block_reason=sol_score_missing"
+else
+    fail "AC-3 (round 1): missing-sol_score reason wrong"
+fi
+cleanup_env "$TMP_SOL_MISS"
+
+# AC-3 hardening: invalid sol_score.value type -> hard-block.
+TMP_SOL_INV=$(mktemp -d)
+LOOP_SOL_INV=$(setup_test_env "$TMP_SOL_INV")
+make_sidecar "$LOOP_SOL_INV" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"sol_score": {"value": "not_a_number_or_sentinel", "provenance": {"authority": "local_proxy_5060", "basis": "x", "leaderboard_comparable": false}}}' >/dev/null
+rc=$(run_engine "$TMP_SOL_INV" "$LOOP_SOL_INV" 1)
+if [[ "$rc" == "1" ]]; then
+    pass "AC-3 (round 1): invalid sol_score.value -> exit 1"
+else
+    fail "AC-3 (round 1): invalid value exit $rc, expected 1"
+fi
+cleanup_env "$TMP_SOL_INV"
+
+# AC-3 hardening: missing sol_score.provenance.authority -> hard-block.
+TMP_SOL_PROV=$(mktemp -d)
+LOOP_SOL_PROV=$(setup_test_env "$TMP_SOL_PROV")
+make_sidecar "$LOOP_SOL_PROV" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['sol_score']['provenance'].pop('authority'); json.dump(d, open(p,'w'))" "$LOOP_SOL_PROV/round-1-objectives.json"
+rc=$(run_engine "$TMP_SOL_PROV" "$LOOP_SOL_PROV" 1)
+if [[ "$rc" == "1" ]]; then
+    pass "AC-3 (round 1): missing provenance.authority -> exit 1"
+else
+    fail "AC-3 (round 1): missing authority exit $rc, expected 1"
+fi
+row_prov=$(last_jsonl_row "$LOOP_SOL_PROV")
+if python3 -c "import json,sys; r=json.loads(sys.argv[1]); assert r['block_reason']=='sol_score_provenance_missing_authority'" "$row_prov" 2>/dev/null; then
+    pass "AC-3 (round 1): block_reason=sol_score_provenance_missing_authority"
+else
+    fail "AC-3 (round 1): provenance-missing reason wrong"
+fi
+cleanup_env "$TMP_SOL_PROV"
+
+# AC-6 ledger normalization: empty rule_compliance still emits 9 explicit
+# not_evaluated entries in the JSONL row. The make_sidecar helper's
+# deep_merge cannot null-out the rule_compliance dict, so the sidecar
+# file is rewritten with rule_compliance forced to {} after generation.
+TMP_RC_EMPTY=$(mktemp -d)
+LOOP_RC_EMPTY=$(setup_test_env "$TMP_RC_EMPTY")
+make_sidecar "$LOOP_RC_EMPTY" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+python3 -c "import json,sys; p=sys.argv[1]; d=json.load(open(p)); d['rule_compliance']={}; json.dump(d, open(p,'w'))" "$LOOP_RC_EMPTY/round-1-objectives.json"
+run_engine "$TMP_RC_EMPTY" "$LOOP_RC_EMPTY" 1 >/dev/null
+row_rc=$(last_jsonl_row "$LOOP_RC_EMPTY")
+if python3 -c "
+import json, sys
+r = json.loads(sys.argv[1])
+rc = r['rule_compliance']
+assert len(rc) == 9
+for rid in ['rule_1_no_ncu','rule_2_no_clock_lock','rule_3_no_privileged_cupti','rule_4_no_host_driver_work','rule_5_submission_language','rule_6_no_evaluator_state_exploit','rule_7_default_stream','rule_8_precision_contract','rule_9_iiswc_no_access']:
+    assert rid in rc, f'missing {rid}'
+    assert rc[rid]['status'] == 'not_evaluated', f'bad status for {rid}: {rc[rid]}'
+" "$row_rc" 2>/dev/null; then
+    pass "AC-6 (round 1): empty rule_compliance emits 9 explicit not_evaluated entries"
+else
+    fail "AC-6 (round 1): rule_compliance normalization missing"
+fi
+cleanup_env "$TMP_RC_EMPTY"
+
+# AC-8 setup defaults: setup-rlcr-loop.sh writes the four scalar fields.
+SETUP_FILE="$PROJECT_ROOT/scripts/setup-rlcr-loop.sh"
+for fld in verdict_mismatch verdict_mismatch_count last_computed_verdict last_block_reason; do
+    if grep -qE "^${fld}:" "$SETUP_FILE"; then
+        pass "AC-8 (round 1): setup-rlcr-loop.sh writes default for $fld"
+    else
+        fail "AC-8 (round 1): setup-rlcr-loop.sh missing default for $fld"
+    fi
+done
+
+# AC-8 wrapper export: after a successful transition the wrapper export
+# variables carry sensible values.
+TMP_AC8=$(mktemp -d)
+LOOP_AC8=$(setup_test_env "$TMP_AC8")
+make_sidecar "$LOOP_AC8" 1 "$FIXTURE_DIR/manifest-v2-clean.json" >/dev/null
+WRAPPER_AC8_OUT=$(
+    bash -c "
+        source '$WRAPPER_FILE' 2>/dev/null
+        update_round_state_with_verdict gated next_round '$LOOP_AC8' 1 advanced
+        echo \"computed=\$VERDICT_ENGINE_COMPUTED mismatch=\$VERDICT_ENGINE_MISMATCH block=\$VERDICT_ENGINE_BLOCK_REASON\"
+    " 2>/dev/null | tail -1
+)
+if [[ "$WRAPPER_AC8_OUT" == "computed=advanced mismatch=false block=null" ]]; then
+    pass "AC-8 (round 1): wrapper exports scalar verdict metadata on continue"
+else
+    fail "AC-8 (round 1): wrapper exports wrong (got: $WRAPPER_AC8_OUT)"
+fi
+cleanup_env "$TMP_AC8"
+
+# AC-8 hard-block path: state.md byte-identical AND the wrapper exports
+# block-reason so the next-non-hard-block transition can record it. Hard
+# block itself MUST NOT mutate the state file (AC-15).
+TMP_AC8_HB=$(mktemp -d)
+LOOP_AC8_HB=$(setup_test_env "$TMP_AC8_HB")
+make_sidecar "$LOOP_AC8_HB" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"correctness": {"passed": false}}' >/dev/null
+before_hb=$(state_sha "$LOOP_AC8_HB")
+WRAPPER_AC8_HB_OUT=$(
+    bash -c "
+        source '$WRAPPER_FILE' 2>/dev/null
+        update_round_state_with_verdict gated next_round '$LOOP_AC8_HB' 1 advanced
+        rc=\$?
+        echo \"rc=\$rc block=\$VERDICT_ENGINE_BLOCK_REASON\"
+    " 2>/dev/null | tail -1
+)
+after_hb=$(state_sha "$LOOP_AC8_HB")
+if [[ "$before_hb" == "$after_hb" ]]; then
+    pass "AC-8 / AC-15 (round 1): wrapper hard-block leaves state.md byte-identical"
+else
+    fail "AC-8 / AC-15 (round 1): state.md mutated on hard-block"
+fi
+if [[ "$WRAPPER_AC8_HB_OUT" == "rc=1 block=correctness_failed" ]]; then
+    pass "AC-8 (round 1): wrapper exports block_reason on hard-block"
+else
+    fail "AC-8 (round 1): block-reason export wrong (got: $WRAPPER_AC8_HB_OUT)"
+fi
+cleanup_env "$TMP_AC8_HB"
+
+# AC-8 mismatch counter: Codex says ADVANCED but engine computes blocked
+# (correctness failure) -> wrapper flags mismatch=true. The stop-hook code
+# bumps verdict_mismatch_count on the upsert path. Test the wrapper export
+# only; the upsert is integration code already exercised by AC-1a grep.
+TMP_MM=$(mktemp -d)
+LOOP_MM=$(setup_test_env "$TMP_MM")
+# Use a malformed sidecar that exits 1 with mismatch flagged: codex
+# advanced + computed blocked yields verdict_mismatch=true.
+make_sidecar "$LOOP_MM" 1 "$FIXTURE_DIR/manifest-v2-clean.json" \
+    '{"correctness": {"passed": false}}' >/dev/null
+WRAPPER_MM=$(
+    bash -c "
+        source '$WRAPPER_FILE' 2>/dev/null
+        update_round_state_with_verdict gated next_round '$LOOP_MM' 1 advanced
+        echo \"mismatch=\$VERDICT_ENGINE_MISMATCH\"
+    " 2>/dev/null | tail -1
+)
+if [[ "$WRAPPER_MM" == "mismatch=true" ]]; then
+    pass "AC-8 (round 1): wrapper flags verdict_mismatch when codex+computed disagree"
+else
+    fail "AC-8 (round 1): mismatch flag wrong (got: $WRAPPER_MM)"
+fi
+cleanup_env "$TMP_MM"
+
+# AC-8 stop-hook integration: the upsert call at next_round transition
+# now includes all four scalar field references.
+for var in FIELD_VERDICT_MISMATCH FIELD_VERDICT_MISMATCH_COUNT FIELD_LAST_COMPUTED_VERDICT FIELD_LAST_BLOCK_REASON; do
+    if grep -q "\${$var}=" "$STOP_HOOK"; then
+        pass "AC-8 (round 1): stop-hook upsert references \${$var}"
+    else
+        fail "AC-8 (round 1): stop-hook missing \${$var} in upsert call"
+    fi
+done
 
 print_test_summary "Solbench Verdict Engine Tests"

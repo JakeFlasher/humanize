@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 SCHEMA_VERSION = "1.0"
+SIDECAR_SCHEMA_VERSION = "1.0"
 SUPPORTED_ADAPTERS = {"solbench"}
 ALWAYS_HARD_BLOCK_RULES = {
     "rule_1_no_ncu",
@@ -54,7 +55,7 @@ RULE_FULL_TO_SHORT = {
     "rule_9_iiswc_no_access": "rule_9",
 }
 REQUIRED_IDENTITY_FIELDS = (
-    "schema_version",
+    "sidecar_schema_version",
     "loop_id",
     "round",
     "adapter",
@@ -197,8 +198,11 @@ def validate_sidecar_identity(
     loop_dir: Path,
     expected_round: int,
     project_root: Path,
+    state_round: Optional[int] = None,
 ) -> None:
-    """Verify the 9 identity fields, schema_version, age, and manifest hash."""
+    """Verify the 9 identity fields, sidecar_schema_version, age, and manifest
+    hash. When ``state_round`` is provided, the sidecar round must also match
+    ``state.md`` ``current_round`` (per AC-13)."""
     for field in REQUIRED_IDENTITY_FIELDS:
         if field not in sidecar:
             raise SidecarIdentityError(
@@ -206,11 +210,11 @@ def validate_sidecar_identity(
                 f"Sidecar missing required identity field: {field}",
             )
 
-    schema_version = sidecar.get("schema_version")
-    if schema_version != SCHEMA_VERSION:
+    sidecar_schema = sidecar.get("sidecar_schema_version")
+    if sidecar_schema != SIDECAR_SCHEMA_VERSION:
         raise SidecarIdentityError(
-            "sidecar_identity_invalid:bad_schema_version",
-            f"Unexpected schema_version: {schema_version!r}",
+            "sidecar_identity_invalid:bad_sidecar_schema_version",
+            f"Unexpected sidecar_schema_version: {sidecar_schema!r}",
         )
 
     if sidecar.get("loop_id") != loop_dir.name:
@@ -225,6 +229,13 @@ def validate_sidecar_identity(
             "sidecar_identity_mismatch:round",
             f"Sidecar round {sidecar.get('round')!r} != "
             f"current_round {expected_round}",
+        )
+
+    if state_round is not None and sidecar.get("round") != state_round:
+        raise SidecarIdentityError(
+            "sidecar_identity_mismatch:state_round",
+            f"Sidecar round {sidecar.get('round')!r} != "
+            f"state.md current_round {state_round}",
         )
 
     adapter = sidecar.get("adapter")
@@ -325,6 +336,31 @@ def _surface_status_map(surfaces: List[Dict[str, Any]]) -> Dict[str, str]:
     }
 
 
+def _validate_sol_score(sidecar: Dict[str, Any]) -> Optional[str]:
+    """Return a block_reason if ``sol_score`` is missing or malformed.
+
+    AC-3 forbids silent defaults; an absent ``sol_score`` block must
+    hard-block rather than emit ``null`` in the JSONL row.
+    """
+    sol_score = sidecar.get("sol_score")
+    if not isinstance(sol_score, dict):
+        return "sol_score_missing"
+    if "value" not in sol_score:
+        return "sol_score_missing_value"
+    value = sol_score["value"]
+    if value != "unknown_t_sol" and not isinstance(value, (int, float)):
+        return "sol_score_invalid_value"
+    provenance = sol_score.get("provenance")
+    if not isinstance(provenance, dict):
+        return "sol_score_missing_provenance"
+    for key in ("authority", "basis", "leaderboard_comparable"):
+        if key not in provenance:
+            return f"sol_score_provenance_missing_{key}"
+    if not isinstance(provenance.get("leaderboard_comparable"), bool):
+        return "sol_score_provenance_bad_leaderboard_comparable"
+    return None
+
+
 def compute_verdict_tuple(
     sidecar: Dict[str, Any],
     surfaces: List[Dict[str, Any]],
@@ -340,6 +376,10 @@ def compute_verdict_tuple(
         return 1, "correctness_block_missing", "blocked", False
     if correctness.get("passed") is not True:
         return 1, "correctness_failed", "blocked", False
+
+    sol_score_block_reason = _validate_sol_score(sidecar)
+    if sol_score_block_reason is not None:
+        return 1, sol_score_block_reason, "blocked", False
 
     required_surfaces = sidecar.get("required_surfaces", [])
     if not isinstance(required_surfaces, list):
@@ -464,6 +504,33 @@ def _check_rule_compliance(
     return None
 
 
+def normalize_rule_compliance(rule_compliance: Any) -> Dict[str, Dict[str, Any]]:
+    """Return a 9-entry rule_compliance map for the JSONL row.
+
+    Missing / malformed entries become explicit ``{"status":
+    "not_evaluated", "evidence": null}`` so the ledger contract (AC-6
+    requires 9 rule fields in the JSONL row) holds even when the sidecar
+    omits a rule. The severity-partition hard-block decision is made
+    separately by :func:`_check_rule_compliance`.
+    """
+    if not isinstance(rule_compliance, dict):
+        rule_compliance = {}
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for rule_id in sorted(ALL_RULE_IDS):
+        entry = rule_compliance.get(rule_id)
+        if isinstance(entry, dict):
+            status = entry.get("status")
+            if status not in _VALID_RULE_STATUSES:
+                status = "not_evaluated"
+            normalized[rule_id] = {
+                "status": status,
+                "evidence": entry.get("evidence"),
+            }
+        else:
+            normalized[rule_id] = {"status": "not_evaluated", "evidence": None}
+    return normalized
+
+
 def write_jsonl_row(progress_path: Path, row: Dict[str, Any]) -> None:
     progress_path.parent.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(row, sort_keys=True, ensure_ascii=False)
@@ -511,7 +578,7 @@ def _build_jsonl_row(
         ),
         "required_surfaces": sidecar.get("required_surfaces"),
         "surfaces": surfaces,
-        "rule_compliance": sidecar.get("rule_compliance"),
+        "rule_compliance": normalize_rule_compliance(sidecar.get("rule_compliance")),
         "rule_required_by_objective": sidecar.get("rule_required_by_objective"),
         "ac_deltas": sidecar.get("ac_deltas"),
         "objective_id": sidecar.get("objective_id"),
@@ -573,7 +640,44 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
         default=None,
         help="Override project root; defaults to three levels above the loop dir.",
     )
+    parser.add_argument(
+        "--state-file",
+        default=None,
+        help=(
+            "Path to the active state.md (or finalize-state.md / review state)."
+            " When provided, the engine parses the YAML frontmatter and"
+            " requires sidecar.round == state.current_round == --round."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def parse_state_round(state_file: Optional[Path]) -> Optional[int]:
+    """Return the ``current_round`` integer parsed from ``state.md``
+    frontmatter, or ``None`` when the state file is unavailable. Missing
+    or malformed frontmatter is fail-open here (the round-arg vs sidecar
+    round check still fires); the wrapper passes a state file that almost
+    always exists in practice."""
+    if state_file is None or not state_file.exists():
+        return None
+    try:
+        text = state_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    in_frontmatter = False
+    for line in text.splitlines():
+        if line.strip() == "---":
+            if not in_frontmatter:
+                in_frontmatter = True
+                continue
+            break
+        if in_frontmatter and line.startswith("current_round:"):
+            _, _, value = line.partition(":")
+            try:
+                return int(value.strip())
+            except ValueError:
+                return None
+    return None
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -586,6 +690,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     mode = args.mode
     codex_verdict = args.codex_verdict
     terminal_reason = LOGGED_ONLY_TERMINAL_REASONS.get(transition)
+
+    state_file = Path(args.state_file).resolve() if args.state_file else None
+    state_round = parse_state_round(state_file)
 
     adapter_active, _ = detect_adapter(loop_dir, project_root)
 
@@ -620,6 +727,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             loop_dir=loop_dir,
             expected_round=round_number,
             project_root=project_root,
+            state_round=state_round,
         )
         manifest = read_manifest(sidecar["manifest_path"], project_root)
         surfaces = extract_per_surface_manifest(manifest)

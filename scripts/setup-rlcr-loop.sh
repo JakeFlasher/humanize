@@ -902,6 +902,10 @@ bitlesson_allow_empty_none: $BITLESSON_ALLOW_EMPTY_NONE
 mainline_stall_count: 0
 last_mainline_verdict: unknown
 drift_status: normal
+verdict_mismatch: false
+verdict_mismatch_count: 0
+last_computed_verdict: unknown
+last_block_reason: null
 started_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 ---
 EOF
@@ -1381,7 +1385,7 @@ Reference: @$BITLESSON_FILE
 If this repo has an active verdict adapter (signalled by \`.humanize/adapter-config.json\`, a non-empty \`.claude/knowledge/problems/\` directory, or any previous-round \`round-<N>-objectives.json\` already present in the loop dir), you MUST emit an objective sidecar before exiting this round:
 
 - Write the sidecar to \`$LOOP_DIR/round-<N>-objectives.json\` where \`<N>\` is the round number the verdict engine will gate next.
-- Conform to the schema in \`docs/solbench-verdict-engine-schema.md\`: the 9-field identity block (schema_version 1.0, loop_id, round, adapter, objective_id, objective_hash, manifest_path, manifest_hash, generated_at) plus correctness, latency, sol_score nested provenance, required_surfaces, rule_compliance, and rule_required_by_objective.
+- Conform to the schema in \`docs/solbench-verdict-engine-schema.md\`: the 9-field identity block (\`sidecar_schema_version\` "1.0", loop_id, round, adapter, objective_id, objective_hash, manifest_path, manifest_hash, generated_at) plus correctness, latency, sol_score nested provenance, required_surfaces, rule_compliance, and rule_required_by_objective.
 - Use the sentinel \`"unknown_t_sol"\` for the SOL score when stage-4 SOLAR data is missing; never default to 0.0 or null.
 - For each of the 9 CLAUDE rules report status \`verified | violated | not_evaluated\`; mark \`rule_required_by_objective.<rule_id>\` true only when the rule is materially load-bearing for the round's objective.
 

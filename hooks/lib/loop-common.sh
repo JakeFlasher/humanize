@@ -42,6 +42,10 @@ readonly FIELD_PRIVACY_MODE="privacy_mode"
 readonly FIELD_MAINLINE_STALL_COUNT="mainline_stall_count"
 readonly FIELD_LAST_MAINLINE_VERDICT="last_mainline_verdict"
 readonly FIELD_DRIFT_STATUS="drift_status"
+readonly FIELD_VERDICT_MISMATCH="verdict_mismatch"
+readonly FIELD_VERDICT_MISMATCH_COUNT="verdict_mismatch_count"
+readonly FIELD_LAST_COMPUTED_VERDICT="last_computed_verdict"
+readonly FIELD_LAST_BLOCK_REASON="last_block_reason"
 
 readonly MAINLINE_VERDICT_ADVANCED="advanced"
 readonly MAINLINE_VERDICT_STALLED="stalled"
@@ -747,10 +751,17 @@ update_round_state_with_verdict() {
     local loop_dir="$3"
     local round_number="$4"
     local codex_verdict="${5:-}"
+    local state_file="${6:-$loop_dir/state.md}"
 
-    # The drift-increment flag is cleared on every call so a previous
-    # soft-warn does not leak into a later gated transition.
+    # Export defaults are cleared on every call so a previous soft-warn /
+    # mismatch does not leak into a later gated transition. Callers read
+    # the four export vars after the wrapper returns to persist the AC-8
+    # scalar verdict fields into state.md frontmatter via their own
+    # upsert_state_fields call.
     VERDICT_ENGINE_DRIFT_INCREMENT=false
+    VERDICT_ENGINE_COMPUTED="unknown"
+    VERDICT_ENGINE_BLOCK_REASON="null"
+    VERDICT_ENGINE_MISMATCH=false
 
     local engine_path="${LOOP_COMMON_DIR:-$(dirname "${BASH_SOURCE[0]:-$0}")}/solbench_verdict_engine.py"
     if [[ ! -f "$engine_path" ]]; then
@@ -770,9 +781,47 @@ update_round_state_with_verdict() {
     if [[ -n "$codex_verdict" ]]; then
         args+=("--codex-verdict" "$codex_verdict")
     fi
+    if [[ -n "$state_file" ]]; then
+        args+=("--state-file" "$state_file")
+    fi
 
     local engine_exit=0
     python3 "$engine_path" "${args[@]}" || engine_exit=$?
+
+    # Extract scalar verdict metadata from the latest JSONL row. The row
+    # already exists regardless of exit code; on hard-block the caller
+    # ignores these (it must not mutate state.md per AC-15), on continue
+    # / soft-warn the caller persists them.
+    local progress="$loop_dir/solbench-progress.jsonl"
+    if [[ -f "$progress" ]]; then
+        local meta
+        meta=$(python3 - "$progress" <<'PY' 2>/dev/null
+import json, sys, pathlib
+path = pathlib.Path(sys.argv[1])
+try:
+    last = path.read_text(encoding="utf-8", errors="replace").splitlines()[-1]
+except (IndexError, OSError):
+    sys.exit(0)
+try:
+    row = json.loads(last)
+except json.JSONDecodeError:
+    sys.exit(0)
+cv = row.get("computed_verdict") or "unknown"
+br = row.get("block_reason") or "null"
+vm = "true" if row.get("verdict_mismatch") else "false"
+print(f"VERDICT_ENGINE_COMPUTED={cv}")
+print(f"VERDICT_ENGINE_BLOCK_REASON={br}")
+print(f"VERDICT_ENGINE_MISMATCH={vm}")
+PY
+) || meta=""
+        while IFS='=' read -r key value; do
+            case "$key" in
+                VERDICT_ENGINE_COMPUTED) VERDICT_ENGINE_COMPUTED="$value" ;;
+                VERDICT_ENGINE_BLOCK_REASON) VERDICT_ENGINE_BLOCK_REASON="$value" ;;
+                VERDICT_ENGINE_MISMATCH) VERDICT_ENGINE_MISMATCH="$value" ;;
+            esac
+        done <<< "$meta"
+    fi
 
     if [[ "$mode" == "logged_only" ]]; then
         return 0

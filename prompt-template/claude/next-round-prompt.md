@@ -80,7 +80,7 @@ If you cannot safely reconcile the tracker yourself, include an optional "Goal T
 If this repo has an active verdict adapter (signalled by `.humanize/adapter-config.json`, a non-empty `.claude/knowledge/problems/` directory, or a previous-round `round-<N>-objectives.json` already present in the loop dir), you MUST emit an objective sidecar before exiting this round:
 
 - Write the sidecar to `.humanize/rlcr/<loop>/round-<N>-objectives.json` where `<N>` is the round number whose state-transition the verdict engine will gate next.
-- Conform to the schema documented in `docs/solbench-verdict-engine-schema.md` (identity block + correctness + latency + sol_score nested provenance + required_surfaces + rule_compliance with the required_by_objective overlay + schema_version "1.0").
+- Conform to the schema documented in `docs/solbench-verdict-engine-schema.md`: the 9-field identity block carries `sidecar_schema_version: "1.0"` plus `loop_id`, `round`, `adapter`, `objective_id`, `objective_hash`, `manifest_path`, `manifest_hash`, and `generated_at`. The remaining sidecar payload covers `correctness`, `latency`, `sol_score` nested provenance, `required_surfaces`, `rule_compliance`, and `rule_required_by_objective`.
 - Compute `manifest_hash` as the SHA-256 of the manifest bytes; `objective_hash` as the SHA-256 of the canonical objective definition.
 - Use the sentinel `"unknown_t_sol"` for the SOL score when stage-4 SOLAR data is not yet registered; never default to 0.0 or null.
 - For each of the 9 CLAUDE rules report status `verified | violated | not_evaluated`. Mark `rule_required_by_objective.<rule_id> = true` only when the rule is materially load-bearing for the round's objective; otherwise leave it false.

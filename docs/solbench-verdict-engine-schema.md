@@ -11,9 +11,16 @@ without exposing an external `--adapter` flag.
 
 ## Schema Version
 
-`schema_version: "1.0"`. The string is required on every sidecar and on every
-emitted JSONL row so a future migration can route mixed corpora through the
-correct decoder.
+Two distinct version strings:
+
+- `sidecar_schema_version: "1.0"` is part of the sidecar identity block; the
+  engine fail-closes when the field is absent or carries any value other
+  than `"1.0"`. It tracks the schema of the **sidecar** itself.
+- `schema_version: "1.0"` is part of every emitted JSONL row; it tracks the
+  schema of the **JSONL ledger** so a future migration can route mixed
+  corpora through the correct decoder.
+
+The two versions can advance independently in future releases.
 
 ## Required Fields
 
@@ -26,7 +33,7 @@ hard-block.
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `schema_version` | string | Must equal `"1.0"` in v1. |
+| `sidecar_schema_version` | string | Must equal `"1.0"` in v1. Distinct from the JSONL row's `schema_version`. |
 | `loop_id` | string | Loop directory basename, e.g. `2026-05-15_22-01-15`. |
 | `round` | integer | Must match `state.md` `current_round` at sidecar-write time. |
 | `adapter` | string | Adapter identifier; v1 expects `"solbench"`. |
@@ -267,7 +274,7 @@ genuinely unknown (no leaderboard requirement), and all known rules verify.
 
 ```json
 {
-  "schema_version": "1.0",
+  "sidecar_schema_version": "1.0",
   "loop_id": "2026-05-15_22-01-15",
   "round": 1,
   "adapter": "solbench",
