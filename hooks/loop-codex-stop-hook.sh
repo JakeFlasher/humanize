@@ -27,6 +27,14 @@ DEFAULT_CODEX_TIMEOUT=5400
 
 HOOK_INPUT=$(cat)
 
+# Codex native hooks provide the project cwd in JSON. Export it through a
+# neutral Humanize variable before resolving project state; the legacy resolver
+# still supports CLAUDE_PROJECT_DIR for older harness entry points.
+HOOK_CWD=$(printf '%s' "$HOOK_INPUT" | jq -r '.cwd // empty' 2>/dev/null || true)
+if [[ -n "$HOOK_CWD" ]]; then
+    export HUMANIZE_PROJECT_DIR="$HOOK_CWD"
+fi
+
 # NOTE: We intentionally do NOT check stop_hook_active here.
 # For iterative loops, stop_hook_active will be true when Claude is continuing
 # from a previous blocked stop. We WANT to run Codex review each iteration.
@@ -66,6 +74,23 @@ LOOP_DIR=$(find_active_loop "$LOOP_BASE_DIR" "$HOOK_SESSION_ID" true)
 # If no active loop (or session_id mismatch), allow exit
 if [[ -z "$LOOP_DIR" ]]; then
     exit 0
+fi
+
+# Codex installs only the Stop hook, so there may be no PostToolUse hook to
+# fill session_id after setup. Claim an unbound active loop on the first Stop
+# event that carries a session id, then remove the stale setup signal.
+if [[ -n "$HOOK_SESSION_ID" && "$HOOK_SESSION_ID" =~ ^[a-zA-Z0-9._:-]+$ ]]; then
+    CLAIM_STATE_FILE=$(resolve_active_state_file "$LOOP_DIR")
+    if [[ -n "$CLAIM_STATE_FILE" ]]; then
+        CLAIM_STORED_SESSION_ID=$(awk -v key="${FIELD_SESSION_ID}" 'BEGIN{f=0} /^---$/{f++; next} f==1 && $0 ~ "^"key":"{sub("^"key":[[:space:]]*",""); print; exit}' "$CLAIM_STATE_FILE" 2>/dev/null | tr -d ' ' || true)
+        if [[ -z "$CLAIM_STORED_SESSION_ID" ]]; then
+            upsert_state_fields "$CLAIM_STATE_FILE" "${FIELD_SESSION_ID}=${HOOK_SESSION_ID}"
+            PENDING_SESSION_FILE="$(cd "$LOOP_DIR/../.." && pwd)/.pending-session-id"
+            if [[ -f "$PENDING_SESSION_FILE" ]] && [[ "$(sed -n '1p' "$PENDING_SESSION_FILE" 2>/dev/null)" == "$CLAIM_STATE_FILE" ]]; then
+                rm -f "$PENDING_SESSION_FILE" 2>/dev/null || true
+            fi
+        fi
+    fi
 fi
 
 # ========================================
@@ -138,6 +163,14 @@ CODEX_EXEC_EFFORT="${STATE_CODEX_EFFORT:-$DEFAULT_CODEX_EFFORT}"
 CODEX_REVIEW_MODEL="$CODEX_EXEC_MODEL"
 CODEX_REVIEW_EFFORT="high"
 CODEX_TIMEOUT="${STATE_CODEX_TIMEOUT:-${CODEX_TIMEOUT:-$DEFAULT_CODEX_TIMEOUT}}"
+MAX_CODEX_TIMEOUT=6900
+if ! [[ "$CODEX_TIMEOUT" =~ ^[0-9]+$ ]] || [[ "$CODEX_TIMEOUT" -lt 1 ]]; then
+    echo "Warning: invalid codex_timeout '$CODEX_TIMEOUT'; using default $DEFAULT_CODEX_TIMEOUT" >&2
+    CODEX_TIMEOUT="$DEFAULT_CODEX_TIMEOUT"
+elif [[ "$CODEX_TIMEOUT" -gt "$MAX_CODEX_TIMEOUT" ]]; then
+    echo "Warning: codex_timeout $CODEX_TIMEOUT exceeds safe inner hook timeout; capping to $MAX_CODEX_TIMEOUT" >&2
+    CODEX_TIMEOUT="$MAX_CODEX_TIMEOUT"
+fi
 ASK_CODEX_QUESTION="${STATE_ASK_CODEX_QUESTION:-false}"
 AGENT_TEAMS="${STATE_AGENT_TEAMS:-false}"
 PRIVACY_MODE="${STATE_PRIVACY_MODE:-true}"
@@ -993,6 +1026,7 @@ if [[ "$IS_FINALIZE_PHASE" == "true" ]]; then
     fi
     # Methodology analysis skipped or already done - proceed with normal exit
     mv "$STATE_FILE" "$LOOP_DIR/complete-state.md"
+    cleanup_loop_runtime_markers "$LOOP_DIR" "$STATE_FILE"
     echo "State preserved as: $LOOP_DIR/complete-state.md" >&2
     exit 0
 fi
@@ -1196,11 +1230,12 @@ if [[ -n "$CODEX_EXEC_EFFORT" ]]; then
     CODEX_EXEC_ARGS+=("-c" "model_reasoning_effort=${CODEX_EXEC_EFFORT}")
 fi
 
-CODEX_AUTO_FLAG="--full-auto"
 if [[ "${HUMANIZE_CODEX_BYPASS_SANDBOX:-}" == "true" ]] || [[ "${HUMANIZE_CODEX_BYPASS_SANDBOX:-}" == "1" ]]; then
-    CODEX_AUTO_FLAG="--dangerously-bypass-approvals-and-sandbox"
+    CODEX_EXEC_ARGS+=("--dangerously-bypass-approvals-and-sandbox")
+else
+    CODEX_EXEC_ARGS+=("-s" "read-only")
 fi
-CODEX_EXEC_ARGS+=("$CODEX_AUTO_FLAG" "-C" "$PROJECT_ROOT")
+CODEX_EXEC_ARGS+=("-C" "$PROJECT_ROOT")
 
 # Build Codex command arguments for codex review
 CODEX_REVIEW_ARGS=("-c" "model=${CODEX_REVIEW_MODEL}" "-c" "review_model=${CODEX_REVIEW_MODEL}")

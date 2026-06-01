@@ -152,16 +152,13 @@ if [[ ! -w "$OUTPUT_DIR" ]]; then
     exit 5
 fi
 
-# All checks passed
-INPUT_LINE_COUNT=$(wc -l < "$INPUT_FILE" | tr -d ' ')
-echo "VALIDATION_SUCCESS"
-echo "Input file: $INPUT_FILE ($INPUT_LINE_COUNT lines)"
-echo "Output target: $OUTPUT_FILE"
-echo "IO validation passed."
-
-# Locate template file using CLAUDE_PLUGIN_ROOT (set by Claude Code plugin system)
+# Locate template file using HUMANIZE_PLUGIN_ROOT/CODEX_PLUGIN_ROOT.
 # Fallback to script-relative path if environment variable not set
-if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+if [[ -n "${HUMANIZE_PLUGIN_ROOT:-}" ]]; then
+    TEMPLATE_FILE="$HUMANIZE_PLUGIN_ROOT/prompt-template/plan/gen-plan-template.md"
+elif [[ -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
+    TEMPLATE_FILE="$CODEX_PLUGIN_ROOT/prompt-template/plan/gen-plan-template.md"
+elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
     TEMPLATE_FILE="$CLAUDE_PLUGIN_ROOT/prompt-template/plan/gen-plan-template.md"
 else
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -174,6 +171,12 @@ if [[ ! -f "$TEMPLATE_FILE" ]]; then
     exit 7
 fi
 
+# All checks passed
+INPUT_LINE_COUNT=$(wc -l < "$INPUT_FILE" | tr -d ' ')
+echo "VALIDATION_SUCCESS"
+echo "Input file: $INPUT_FILE ($INPUT_LINE_COUNT lines)"
+echo "Output target: $OUTPUT_FILE"
+echo "IO validation passed."
 echo "TEMPLATE_FILE: $TEMPLATE_FILE"
 echo "Proceeding with draft analysis..."
 exit 0

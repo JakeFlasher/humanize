@@ -112,11 +112,11 @@ CODEX_PROJECT_ROOT="$BITLESSON_PROJECT_ROOT"
 
 MERGED_CONFIG="$(load_merged_config "$PLUGIN_ROOT" "$BITLESSON_PROJECT_ROOT")"
 BITLESSON_MODEL="$(get_config_value "$MERGED_CONFIG" "bitlesson_model")"
-BITLESSON_MODEL="${BITLESSON_MODEL:-haiku}"
 CODEX_FALLBACK_MODEL="$(get_config_value "$MERGED_CONFIG" "codex_model")"
 CODEX_FALLBACK_MODEL="${CODEX_FALLBACK_MODEL:-$DEFAULT_CODEX_MODEL}"
+BITLESSON_MODEL="${BITLESSON_MODEL:-$CODEX_FALLBACK_MODEL}"
 PROVIDER_MODE="$(get_config_value "$MERGED_CONFIG" "provider_mode")"
-PROVIDER_MODE="${PROVIDER_MODE:-auto}"
+PROVIDER_MODE="${PROVIDER_MODE:-codex-only}"
 
 # ========================================
 # Determine Provider from BITLESSON_MODEL

@@ -239,7 +239,11 @@ fi
 # ========================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+if [[ -n "${HUMANIZE_PLUGIN_ROOT:-}" ]]; then
+    PLUGIN_ROOT="$HUMANIZE_PLUGIN_ROOT"
+elif [[ -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
+    PLUGIN_ROOT="$CODEX_PLUGIN_ROOT"
+elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
     PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
 else
     PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -393,9 +397,9 @@ BASE_BRANCH="$(git -C "$PROJECT_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null ||
 # Dirty checkout check (hard-fail)
 # ========================================
 
-DIRTY_FILES="$(git -C "$PROJECT_ROOT" diff --name-only HEAD -- 2>/dev/null || true)"
+DIRTY_FILES="$(git -C "$PROJECT_ROOT" status --porcelain --untracked-files=all 2>/dev/null | sed '/^[?][?] .humanize\//d' || true)"
 if [[ -n "$DIRTY_FILES" ]]; then
-    echo "ERROR: Main checkout has uncommitted tracked changes." >&2
+    echo "ERROR: Main checkout has uncommitted or untracked changes." >&2
     echo "  Commit or stash changes before running explore-idea." >&2
     echo "  Dirty files:" >&2
     printf '%s\n' "$DIRTY_FILES" | sed 's/^/    /' >&2

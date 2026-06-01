@@ -125,7 +125,7 @@ HOOK_INPUT=$(jq -n \
 # Capture hook exit code explicitly to map non-zero to exit 20 (wrapper error)
 # instead of letting set -e propagate the raw hook exit code.
 HOOK_EXIT=0
-HOOK_OUTPUT="$(printf '%s' "$HOOK_INPUT" | CLAUDE_PROJECT_DIR="$PROJECT_ROOT" "$HOOK_SCRIPT")" || HOOK_EXIT=$?
+HOOK_OUTPUT="$(printf '%s' "$HOOK_INPUT" | HUMANIZE_PROJECT_DIR="$PROJECT_ROOT" CLAUDE_PROJECT_DIR="$PROJECT_ROOT" "$HOOK_SCRIPT")" || HOOK_EXIT=$?
 
 if [[ $HOOK_EXIT -ne 0 ]]; then
     echo "Error: Hook script exited with code $HOOK_EXIT" >&2

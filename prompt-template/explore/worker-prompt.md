@@ -103,8 +103,8 @@ For each iteration (up to `<MAX_WORKER_ITERATIONS>`):
    Record `tests_passed` and `tests_failed` counts from the targeted test run(s).
 4. **Review with Codex**:
    ```bash
-   export CLAUDE_PROJECT_DIR="$PWD"
-   bash "${CLAUDE_PLUGIN_ROOT}/scripts/ask-codex.sh" \
+   export HUMANIZE_PROJECT_DIR="$PWD"
+   bash "${HUMANIZE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-}}}/scripts/ask-codex.sh" \
      --codex-timeout $(( <CODEX_TIMEOUT_MIN> * 60 )) \
      --codex-model "<CODEX_REVIEW_MODEL_SPEC>" \
      "Review the prototype changes for direction <DIRECTION_ID> (<DIR_SLUG>). Focus on: correctness, fit with existing patterns, and implementation completeness. Reply with LGTM if acceptable, or list specific required changes."

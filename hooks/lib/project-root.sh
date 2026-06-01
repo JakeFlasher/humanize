@@ -4,11 +4,11 @@
 #
 # Resolution priority:
 #   1. linked git worktree toplevel when it differs from CLAUDE_PROJECT_DIR
-#   2. CLAUDE_PROJECT_DIR (Claude session root)
+#   2. HUMANIZE_PROJECT_DIR or CLAUDE_PROJECT_DIR (session root)
 #   3. git rev-parse --show-toplevel (nearest enclosing repo)
 #   4. Non-zero return.
 #
-# CLAUDE_PROJECT_DIR is normally the authoritative session root. Hooks and
+# HUMANIZE_PROJECT_DIR/CLAUDE_PROJECT_DIR is normally the authoritative session root. Hooks and
 # helper scripts are often executed from the plugin checkout while targeting a
 # different project, so blindly preferring the plugin repo's git toplevel makes
 # active loop state and project config disappear.
@@ -49,7 +49,7 @@ _HUMANIZE_PROJECT_ROOT_SOURCED=1
 #   }
 #
 resolve_project_root() {
-    local env_root="${CLAUDE_PROJECT_DIR:-}"
+    local env_root="${HUMANIZE_PROJECT_DIR:-${CLAUDE_PROJECT_DIR:-}}"
     local git_root=""
     local root=""
 

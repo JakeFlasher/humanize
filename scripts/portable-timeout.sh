@@ -42,24 +42,37 @@ run_with_timeout() {
 
     case "$TIMEOUT_IMPL" in
         gtimeout)
-            gtimeout "$timeout_secs" "${cmd[@]}"
+            gtimeout --kill-after=30s "$timeout_secs" "${cmd[@]}"
             return $?
             ;;
         timeout)
-            timeout "$timeout_secs" "${cmd[@]}"
+            timeout --kill-after=30s "$timeout_secs" "${cmd[@]}"
             return $?
             ;;
         python3|python)
-            # Use Python's subprocess with timeout
+            # Use Python's subprocess with timeout. Start a process group so
+            # timeout cleanup reaches nested CLI children.
             "$TIMEOUT_IMPL" -c "
+import os
+import signal
 import subprocess
 import sys
 
 try:
-    result = subprocess.run(sys.argv[1:], timeout=$timeout_secs)
-    sys.exit(result.returncode)
-except subprocess.TimeoutExpired:
-    sys.exit(124)  # Match GNU timeout exit code
+    proc = subprocess.Popen(sys.argv[1:], preexec_fn=os.setsid)
+    try:
+        proc.wait(timeout=$timeout_secs)
+        sys.exit(proc.returncode)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=30)
+        except Exception:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                pass
+        sys.exit(124)  # Match GNU timeout exit code
 except Exception as e:
     print(f'Error: {e}', file=sys.stderr)
     sys.exit(1)

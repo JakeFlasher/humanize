@@ -1,7 +1,7 @@
 ---
 name: bitlesson-selector
 description: Selects required BitLesson entries for a specific sub-task. Use before execution for every task or sub-task.
-model: haiku
+model: gpt-5.5
 tools: Read, Grep
 ---
 

@@ -187,7 +187,11 @@ if [[ ! -w "$OUTPUT_DIR" ]]; then
     exit 5
 fi
 
-if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
+if [[ -n "${HUMANIZE_PLUGIN_ROOT:-}" ]]; then
+    TEMPLATE_FILE="$HUMANIZE_PLUGIN_ROOT/prompt-template/idea/gen-idea-template.md"
+elif [[ -n "${CODEX_PLUGIN_ROOT:-}" ]]; then
+    TEMPLATE_FILE="$CODEX_PLUGIN_ROOT/prompt-template/idea/gen-idea-template.md"
+elif [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
     TEMPLATE_FILE="$CLAUDE_PLUGIN_ROOT/prompt-template/idea/gen-idea-template.md"
 else
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"

@@ -203,7 +203,7 @@ fi
 
 # Load bitlesson model from merged config (controls which CLI bitlesson-select.sh uses)
 DEFAULT_BITLESSON_MODEL="$(get_config_value "$_LOOP_COMMON_CONFIG" "bitlesson_model" 2>/dev/null || true)"
-DEFAULT_BITLESSON_MODEL="${DEFAULT_BITLESSON_MODEL:-haiku}"
+DEFAULT_BITLESSON_MODEL="${DEFAULT_BITLESSON_MODEL:-gpt-5.5}"
 
 # Load codex model/effort from merged config so .humanize/config.json can set persistent
 # defaults for all Codex-using features (RLCR, ask-codex).
@@ -726,14 +726,11 @@ upsert_state_fields() {
 # Required globals: LOOP_DIR, CACHE_DIR
 #
 # Algorithm:
-# 1. Scan the last 50 lines of the log file for [P?] markers in the first 10
-#    characters of each line. Real review issues only appear near the end of the
-#    log; scanning the full file risks false positives from earlier debug output
-#    and can hit argument-list-too-long limits on very large logs.
-# 2. Find the first such line where [P?] (? is a digit) appears in the first 10
-#    characters.
-# 3. If found: extract from that line to the end and output it.
-# 4. If not found: no issues, return 1.
+# 1. Scan the full log file for [P?] markers in the first 10 characters of a
+#    line. Codex review can append enough footer/debug output to push findings
+#    out of a small tail window.
+# 2. If found: extract from that line to the end and output it.
+# 3. If not found: persist an audit copy of the clean review and return 1.
 #
 # Note: codex review outputs to stderr, so we analyze the combined log file
 # which contains both stdout and stderr (redirected with 2>&1).
@@ -752,22 +749,16 @@ detect_review_issues() {
     total_lines=$(wc -l < "$log_file")
     echo "Analyzing log file: $log_file ($total_lines lines)" >&2
 
-    # Only scan the last 50 lines - real issues always appear near the end
-    local scan_lines=50
-    local start_line=$((total_lines > scan_lines ? total_lines - scan_lines + 1 : 1))
-
-    # Use awk on the tail to find the first line where [P?] appears in first 10 chars
-    local relative_line
-    relative_line=$(tail -n "$scan_lines" "$log_file" | awk '
+    # Find the first line where [P?] appears in the first 10 chars.
+    local found_line
+    found_line=$(awk '
         substr($0, 1, 10) ~ /\[P[0-9]\]/ {
             print NR
             exit
         }
-    ')
+    ' "$log_file")
 
-    if [[ -n "$relative_line" && "$relative_line" -gt 0 ]]; then
-        # Convert relative line (within tail) to absolute line in the full file
-        local found_line=$((start_line + relative_line - 1))
+    if [[ -n "$found_line" && "$found_line" -gt 0 ]]; then
         echo "Found [P?] issue at line $found_line" >&2
 
         # Extract from found_line to end
@@ -783,7 +774,16 @@ detect_review_issues() {
         return 0
     fi
 
-    echo "No [P?] issues found in log file" >&2
+    {
+        echo "## Codex Review Result"
+        echo
+        echo "No [P?] issues found in codex review output."
+        echo
+        echo '```text'
+        tail -200 "$log_file"
+        echo '```'
+    } > "$result_file"
+    echo "No [P?] issues found in log file; clean review audit saved to: $result_file" >&2
     return 1
 }
 
@@ -1535,6 +1535,25 @@ Rules:
         "CORRECT_PATH=$correct_path"
 }
 
+# Clean transient loop markers that should not survive terminal states.
+# Usage: cleanup_loop_runtime_markers "$loop_dir" "$state_file"
+cleanup_loop_runtime_markers() {
+    local loop_dir="$1"
+    local state_file="${2:-}"
+    local humanize_dir
+    humanize_dir="$(cd "$loop_dir/../.." 2>/dev/null && pwd || true)"
+
+    rm -f "$loop_dir/bg-pending.marker" 2>/dev/null || true
+
+    if [[ -n "$humanize_dir" && -f "$humanize_dir/.pending-session-id" ]]; then
+        local pending_state
+        pending_state="$(sed -n '1p' "$humanize_dir/.pending-session-id" 2>/dev/null || true)"
+        if [[ -z "$state_file" || "$pending_state" == "$state_file" || "$pending_state" == "$loop_dir/state.md" ]]; then
+            rm -f "$humanize_dir/.pending-session-id" 2>/dev/null || true
+        fi
+    fi
+}
+
 # End the loop by renaming state.md to indicate exit reason
 # Usage: end_loop "$loop_dir" "$state_file" "complete|cancel|maxiter|stop|unexpected"
 # Arguments:
@@ -1561,6 +1580,7 @@ end_loop() {
 
     if [[ -f "$state_file" ]]; then
         mv "$state_file" "$loop_dir/$target_name"
+        cleanup_loop_runtime_markers "$loop_dir" "$state_file"
         echo "Loop ended: $reason" >&2
         echo "State preserved as: $loop_dir/$target_name" >&2
         return 0

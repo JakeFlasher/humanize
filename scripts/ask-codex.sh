@@ -265,13 +265,13 @@ if [[ -n "$CODEX_EFFORT" ]]; then
     CODEX_EXEC_ARGS+=("-c" "model_reasoning_effort=${CODEX_EFFORT}")
 fi
 
-# Determine automation flag based on environment variable
-CODEX_AUTO_FLAG="--full-auto"
 if [[ "${HUMANIZE_CODEX_BYPASS_SANDBOX:-}" == "true" ]] || [[ "${HUMANIZE_CODEX_BYPASS_SANDBOX:-}" == "1" ]]; then
-    CODEX_AUTO_FLAG="--dangerously-bypass-approvals-and-sandbox"
+    CODEX_EXEC_ARGS+=("--dangerously-bypass-approvals-and-sandbox")
+else
+    CODEX_EXEC_ARGS+=("-s" "read-only")
 fi
 
-CODEX_EXEC_ARGS+=("$CODEX_AUTO_FLAG" "-C" "$PROJECT_ROOT")
+CODEX_EXEC_ARGS+=("-C" "$PROJECT_ROOT")
 
 # ========================================
 # Save Debug Command

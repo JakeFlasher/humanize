@@ -1,7 +1,7 @@
 ---
 name: draft-relevance-checker
 description: Checks if a draft document is relevant to the current repository. Use when validating draft content for gen-plan command.
-model: haiku
+model: gpt-5.5
 tools: Read, Glob, Grep
 ---
 

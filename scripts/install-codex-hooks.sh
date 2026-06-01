@@ -70,6 +70,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -f "$HOOKS_TEMPLATE" ]] || die "hook template not found: $HOOKS_TEMPLATE"
+[[ -x "$RUNTIME_ROOT/hooks/loop-codex-stop-hook.sh" ]] || die "runtime Stop hook not found or not executable: $RUNTIME_ROOT/hooks/loop-codex-stop-hook.sh"
 
 HOOKS_FILE="$CODEX_CONFIG_DIR/hooks.json"
 

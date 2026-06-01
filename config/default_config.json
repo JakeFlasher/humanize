@@ -1,7 +1,8 @@
 {
   "codex_model": "gpt-5.5",
   "codex_effort": "high",
-  "bitlesson_model": "haiku",
+  "bitlesson_model": "gpt-5.5",
+  "provider_mode": "codex-only",
   "agent_teams": false,
   "alternative_plan_language": "",
   "gen_plan_mode": "discussion"

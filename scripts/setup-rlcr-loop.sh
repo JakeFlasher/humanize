@@ -16,6 +16,10 @@ set -euo pipefail
 
 # DEFAULT_CODEX_MODEL and DEFAULT_CODEX_EFFORT are provided by loop-common.sh
 DEFAULT_CODEX_TIMEOUT=5400
+# Keep the inner reviewer timeout below the native Codex hook timeout
+# (7200s in config/codex-hooks.json) so the harness can return a structured
+# retry/block result instead of being killed by the outer hook watchdog.
+MAX_CODEX_TIMEOUT=6900
 DEFAULT_MAX_ITERATIONS=42
 DEFAULT_FULL_REVIEW_ROUND=5
 
@@ -225,6 +229,10 @@ while [[ $# -gt 0 ]]; do
             fi
             if ! [[ "$2" =~ ^[0-9]+$ ]]; then
                 echo "Error: --codex-timeout must be a positive integer (seconds), got: $2" >&2
+                exit 1
+            fi
+            if [[ "$2" -gt "$MAX_CODEX_TIMEOUT" ]]; then
+                echo "Error: --codex-timeout must be <= $MAX_CODEX_TIMEOUT seconds for Codex hook safety, got: $2" >&2
                 exit 1
             fi
             CODEX_TIMEOUT="$2"

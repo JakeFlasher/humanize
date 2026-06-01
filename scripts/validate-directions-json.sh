@@ -51,10 +51,10 @@ if jq -e '
   # schema_version must be 1
   .schema_version == 1
 
-  # required top-level keys must be present and be strings
-  and ((.title | type) == "string")
-  and ((.original_idea | type) == "string")
-  and ((.synthesis_notes | type) == "string")
+  # required top-level keys must be present and non-empty strings
+  and (.title | non_empty_string)
+  and (.original_idea | non_empty_string)
+  and (.synthesis_notes | non_empty_string)
   and has("metadata")
   and has("directions")
 
@@ -100,17 +100,17 @@ if jq -e '
   # confidence must be high, medium, or low for each direction
   and (.directions | map(.confidence) | all(. == "high" or . == "medium" or . == "low"))
 
-  # each direction must have all required string fields
+  # each direction must have all required non-empty string fields
   and (.directions | map(
-        ((.name | type) == "string")
-        and ((.rationale | type) == "string")
-        and ((.raw_phase3_response | type) == "string")
-        and ((.approach_summary | type) == "string")
+        (.name | non_empty_string)
+        and (.rationale | non_empty_string)
+        and (.raw_phase3_response | non_empty_string)
+        and (.approach_summary | non_empty_string)
         and ((.objective_evidence | type) == "array")
         and ((.known_risks | type) == "array")
         # array items must be strings
-        and (.objective_evidence | map(type == "string") | all)
-        and (.known_risks | map(type == "string") | all)
+        and (.objective_evidence | map(non_empty_string) | all)
+        and (.known_risks | map(non_empty_string) | all)
       ) | all)
 ' "$INPUT_FILE" > /dev/null 2>&1; then
     echo "VALIDATION_SUCCESS"
