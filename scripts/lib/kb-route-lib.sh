@@ -61,10 +61,15 @@ kb_resolve_binary() {
     command -v "$bin" >/dev/null 2>&1
 }
 
-# kb_sanitize_top_k <raw>  ->  prints a positive integer (default 5)
+# kb_sanitize_top_k <raw>  ->  prints a positive integer in [1,25] (default 5)
 #   get_config_value tostring-coerces numbers, so kb_top_k arrives as a
-#   string. Reject 0/negative/non-numeric and fall back to 5.
+#   string. Reject 0/negative/non-numeric (-> 5) and clamp huge values (-> 25)
+#   so the injected block stays bounded at the source.
 kb_sanitize_top_k() {
     local raw="$1"
-    if [[ "$raw" =~ ^[1-9][0-9]*$ ]]; then printf '%s' "$raw"; else printf '5'; fi
+    if [[ "$raw" =~ ^[1-9][0-9]*$ ]]; then
+        if [ "$raw" -gt 25 ]; then printf '25'; else printf '%s' "$raw"; fi
+    else
+        printf '5'
+    fi
 }
