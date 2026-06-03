@@ -4,5 +4,10 @@
   "bitlesson_model": "haiku",
   "agent_teams": false,
   "alternative_plan_language": "",
-  "gen_plan_mode": "discussion"
+  "gen_plan_mode": "discussion",
+  "kb_enabled": false,
+  "kb_root": "",
+  "kb_deck": "cfa",
+  "kb_top_k": 5,
+  "kb_search_bin": "kb"
 }

@@ -105,6 +105,8 @@ TEST_SUITES=(
     "test-ask-codex.sh"
     # Bitlesson routing tests
     "test-bitlesson-select-routing.sh"
+    # CACG knowledge auto-routing hook tests
+    "test-kb-knowledge-route.sh"
     # Provider routing tests
     "test-model-router.sh"
     # Skill monitor tests
