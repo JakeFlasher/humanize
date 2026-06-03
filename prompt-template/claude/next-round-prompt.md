@@ -16,7 +16,7 @@ Before writing code:
 - Re-read @{{GOAL_TRACKER_FILE}}
 - Re-read the most recent round summaries/reviews that led to this round
 - Write the current round contract to @{{ROUND_CONTRACT_FILE}}
-- If this repo configures an auto-routing knowledge-base hook (e.g. a `UserPromptSubmit` hook that injects matching reference cards as system reminders), defer to those injected cards rather than re-opening primers preemptively. Otherwise, if a local primer exists at `.claude/knowledge/INDEX.md`, read it before coding or delegating domain-specific / modeling / metrics work. Skip this step entirely if neither is configured.
+- If this repo configures an auto-routing knowledge-base hook (e.g. a `UserPromptSubmit` hook that injects matching reference cards as system reminders), defer to those injected cards rather than re-opening primers preemptively. Otherwise, if a CACG knowledge export exists under `.claude/knowledge/` — read the primer `.claude/knowledge/INDEX.md`, search it with `.claude/knowledge/kb-query.sh search "<topic>"`, and open a card with `.claude/knowledge/kb-query.sh show <card_id>` — consult it before coding or delegating domain-specific / modeling / metrics work. Skip this step entirely if neither is configured.
 
 Your round contract must contain:
 - Exactly one **mainline objective**
