@@ -241,20 +241,31 @@ EOF
 # Build Codex Command
 # ========================================
 
-# Probe whether the installed Codex CLI supports --disable hooks to prevent
-# nested hook recursion when ask-codex.sh is called from inside a running loop.
-# Cache the probe result in the skill directory to avoid repeated probes.
+# Probe supported hook feature names before disabling them. Codex has used
+# different names across releases, and older CLIs reject unknown feature names.
 CODEX_DISABLE_HOOKS_ARGS=()
-_CODEX_DISABLE_HOOKS_CACHE="$SKILL_DIR/.codex-disable-hooks-supported"
+_CODEX_DISABLE_HOOKS_CACHE="$SKILL_DIR/.codex-disable-hooks-features"
 if [[ -f "$_CODEX_DISABLE_HOOKS_CACHE" ]]; then
-    [[ "$(cat "$_CODEX_DISABLE_HOOKS_CACHE")" == "yes" ]] && CODEX_DISABLE_HOOKS_ARGS=(--disable hooks)
+    while IFS= read -r feature_name; do
+        case "$feature_name" in
+            hooks|plugin_hooks|codex_hooks)
+                CODEX_DISABLE_HOOKS_ARGS+=("--disable" "$feature_name")
+                ;;
+        esac
+    done < "$_CODEX_DISABLE_HOOKS_CACHE"
 else
     CODEX_HELP_OUTPUT="$(codex --help </dev/null 2>&1 || true)"
     if grep -q -- '--disable' <<< "$CODEX_HELP_OUTPUT"; then
-        CODEX_DISABLE_HOOKS_ARGS=(--disable hooks)
-        echo "yes" > "$_CODEX_DISABLE_HOOKS_CACHE" 2>/dev/null || true
+        _CODEX_DISABLE_HOOK_FEATURES=()
+        for feature_name in hooks plugin_hooks codex_hooks; do
+            if codex --disable "$feature_name" --help </dev/null >/dev/null 2>&1; then
+                CODEX_DISABLE_HOOKS_ARGS+=("--disable" "$feature_name")
+                _CODEX_DISABLE_HOOK_FEATURES+=("$feature_name")
+            fi
+        done
+        printf '%s\n' ${_CODEX_DISABLE_HOOK_FEATURES[@]+"${_CODEX_DISABLE_HOOK_FEATURES[@]}"} > "$_CODEX_DISABLE_HOOKS_CACHE" 2>/dev/null || true
     else
-        echo "no" > "$_CODEX_DISABLE_HOOKS_CACHE" 2>/dev/null || true
+        : > "$_CODEX_DISABLE_HOOKS_CACHE" 2>/dev/null || true
     fi
 fi
 

@@ -70,14 +70,22 @@ setup_mock_codex() {
     mkdir -p "$bin_dir"
     cat > "$bin_dir/codex" <<EOF
 #!/usr/bin/env bash
-# The stop hook probes feature support with \`codex --help\`; advertise
-# --disable so the nested invocation is expected to include it.
-if [[ "\$1" == "--help" ]]; then
+# The stop hook probes feature support with \`codex --help\` and validates each
+# known feature with \`codex --disable <feature> --help\`.
+if printf '%s\n' "\$@" | grep -qx -- '--help'; then
+    if [[ "\${1:-}" == "--disable" ]]; then
+        feature="\${2:-}"
+        supported_features=" \${MOCK_CODEX_SUPPORTED_FEATURES:-hooks plugin_hooks codex_hooks} "
+        if [[ "\$supported_features" != *" \$feature "* ]]; then
+            echo "unknown feature: \$feature" >&2
+            exit 2
+        fi
+    fi
     cat <<HELP
 Usage: codex [OPTIONS] <COMMAND>
 
 Options:
-  --disable <HOOK>         Disable a specific Codex hook (e.g. hooks)
+  --disable <HOOK>         Disable a specific Codex hook
   --skip-git-repo-check    Skip git repo validation
 HELP
     exit 0
@@ -186,13 +194,14 @@ run_loop_hook() {
     local repo_dir="$1"
     local args_file="$2"
     local review_started="$3"
+    local supported_features="${4:-hooks plugin_hooks codex_hooks}"
     local bin_dir="$TEST_DIR/bin-${review_started}"
 
     setup_mock_codex "$bin_dir" "$args_file"
     setup_loop_dir "$repo_dir" "$review_started"
 
     set +e
-    OUTPUT=$(echo '{}' | PATH="$bin_dir:$PATH" CLAUDE_PROJECT_DIR="$repo_dir" bash "$STOP_HOOK" 2>&1)
+    OUTPUT=$(echo '{}' | MOCK_CODEX_SUPPORTED_FEATURES="$supported_features" PATH="$bin_dir:$PATH" CLAUDE_PROJECT_DIR="$repo_dir" bash "$STOP_HOOK" 2>&1)
     EXIT_CODE=$?
     set -e
 
@@ -206,22 +215,22 @@ REPO_IMPL="$TEST_DIR/repo-impl"
 setup_repo "$REPO_IMPL"
 run_loop_hook "$REPO_IMPL" "$TEST_DIR/impl.args" "false"
 
-if grep -q -- 'exec --disable hooks' "$TEST_DIR/impl.args"; then
-    pass "implementation-phase stop hook disables hooks for codex exec"
+if grep -q -- 'exec --disable hooks --disable plugin_hooks --disable codex_hooks' "$TEST_DIR/impl.args"; then
+    pass "implementation-phase stop hook disables all known hook features for codex exec"
 else
-    fail "implementation-phase stop hook disables hooks for codex exec" \
-        "exec --disable hooks" "$(cat "$TEST_DIR/impl.args" 2>/dev/null || echo missing)"
+    fail "implementation-phase stop hook disables all known hook features for codex exec" \
+        "exec --disable hooks --disable plugin_hooks --disable codex_hooks" "$(cat "$TEST_DIR/impl.args" 2>/dev/null || echo missing)"
 fi
 
 REPO_REVIEW="$TEST_DIR/repo-review"
 setup_repo "$REPO_REVIEW"
 run_loop_hook "$REPO_REVIEW" "$TEST_DIR/review.args" "true"
 
-if grep -q -- 'review --disable hooks' "$TEST_DIR/review.args"; then
-    pass "review-phase stop hook disables hooks for codex review"
+if grep -q -- 'review --disable hooks --disable plugin_hooks --disable codex_hooks' "$TEST_DIR/review.args"; then
+    pass "review-phase stop hook disables all known hook features for codex review"
 else
-    fail "review-phase stop hook disables hooks for codex review" \
-        "review --disable hooks" "$(cat "$TEST_DIR/review.args" 2>/dev/null || echo missing)"
+    fail "review-phase stop hook disables all known hook features for codex review" \
+        "review --disable hooks --disable plugin_hooks --disable codex_hooks" "$(cat "$TEST_DIR/review.args" 2>/dev/null || echo missing)"
 fi
 
 if ! grep -q 'codex --help 2>&1 | grep -q' "$STOP_HOOK"; then
@@ -248,6 +257,19 @@ if [[ -f "$REVIEW_PROMPT" ]] && grep -q -- 'must not pass prompt input when `--b
 else
     fail "review audit prompt documents --base prompt incompatibility" \
         'must not pass prompt input when `--base` is used' "$(cat "$REVIEW_PROMPT" 2>/dev/null || echo missing)"
+fi
+
+REPO_LEGACY="$TEST_DIR/repo-legacy"
+setup_repo "$REPO_LEGACY"
+run_loop_hook "$REPO_LEGACY" "$TEST_DIR/legacy.args" "false" "codex_hooks"
+
+if grep -q -- 'exec --disable codex_hooks' "$TEST_DIR/legacy.args" \
+    && ! grep -q -- '--disable hooks' "$TEST_DIR/legacy.args" \
+    && ! grep -q -- 'plugin_hooks' "$TEST_DIR/legacy.args"; then
+    pass "implementation-phase stop hook disables only supported legacy hook feature"
+else
+    fail "implementation-phase stop hook disables only supported legacy hook feature" \
+        "exec --disable codex_hooks only" "$(cat "$TEST_DIR/legacy.args" 2>/dev/null || echo missing)"
 fi
 
 echo ""

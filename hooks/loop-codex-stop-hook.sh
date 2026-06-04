@@ -1174,19 +1174,31 @@ mkdir -p "$CACHE_DIR"
 # portable-timeout.sh already sourced above
 
 # Disable native hooks for nested Codex reviewer calls to prevent Stop-hook recursion.
-# Probe whether the installed Codex CLI supports --disable; cache the result per loop
-# so older builds do not fail with an unknown-argument error.
+# Codex has used different hook feature names across releases. Probe each name
+# before disabling it so older CLIs that validate feature names still work.
 CODEX_DISABLE_HOOKS_ARGS=()
-_CODEX_FEATURE_CACHE="$CACHE_DIR/.codex-disable-hooks-supported"
+_CODEX_FEATURE_CACHE="$CACHE_DIR/.codex-disable-hooks-features"
 if [[ -f "$_CODEX_FEATURE_CACHE" ]]; then
-    [[ "$(cat "$_CODEX_FEATURE_CACHE")" == "yes" ]] && CODEX_DISABLE_HOOKS_ARGS=(--disable hooks)
+    while IFS= read -r feature_name; do
+        case "$feature_name" in
+            hooks|plugin_hooks|codex_hooks)
+                CODEX_DISABLE_HOOKS_ARGS+=("--disable" "$feature_name")
+                ;;
+        esac
+    done < "$_CODEX_FEATURE_CACHE"
 else
     CODEX_HELP_OUTPUT="$(codex --help </dev/null 2>&1 || true)"
     if grep -q -- '--disable' <<< "$CODEX_HELP_OUTPUT"; then
-        CODEX_DISABLE_HOOKS_ARGS=(--disable hooks)
-        echo "yes" > "$_CODEX_FEATURE_CACHE" 2>/dev/null
+        _CODEX_DISABLE_HOOK_FEATURES=()
+        for feature_name in hooks plugin_hooks codex_hooks; do
+            if codex --disable "$feature_name" --help </dev/null >/dev/null 2>&1; then
+                CODEX_DISABLE_HOOKS_ARGS+=("--disable" "$feature_name")
+                _CODEX_DISABLE_HOOK_FEATURES+=("$feature_name")
+            fi
+        done
+        printf '%s\n' ${_CODEX_DISABLE_HOOK_FEATURES[@]+"${_CODEX_DISABLE_HOOK_FEATURES[@]}"} > "$_CODEX_FEATURE_CACHE" 2>/dev/null || true
     else
-        echo "no" > "$_CODEX_FEATURE_CACHE" 2>/dev/null
+        : > "$_CODEX_FEATURE_CACHE" 2>/dev/null || true
     fi
 fi
 

@@ -481,8 +481,10 @@ captured_args="$(cat "$CAPTURE_ARGS")"
 
 if [[ $exit_code -eq 0 ]] \
     && echo "$stdout_out" | grep -q "BL-20260315-tracker-drift" \
-    && echo "$captured_args" | grep -q -- '--disable' \
-    && echo "$captured_args" | grep -q -- 'hooks' \
+    && echo "$captured_args" | grep -qx -- '--disable' \
+    && echo "$captured_args" | grep -qx -- 'hooks' \
+    && echo "$captured_args" | grep -qx -- 'plugin_hooks' \
+    && echo "$captured_args" | grep -qx -- 'codex_hooks' \
     && echo "$captured_args" | grep -q -- '--skip-git-repo-check' \
     && echo "$captured_args" | grep -q -- '--ephemeral' \
     && echo "$captured_args" | grep -q -- 'read-only' \

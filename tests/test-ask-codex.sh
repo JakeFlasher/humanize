@@ -7,6 +7,8 @@
 #   MOCK_CODEX_EXIT_CODE - exit code the mock returns (default: 0)
 #   MOCK_CODEX_STDOUT    - text the mock writes to stdout
 #   MOCK_CODEX_STDERR    - text the mock writes to stderr
+#   MOCK_CODEX_HELP_OUTPUT - text the mock writes for `codex --help`
+#   MOCK_CODEX_ARGS_FILE - optional file where non-help argv is captured
 #
 
 set -euo pipefail
@@ -40,6 +42,23 @@ cat > "$MOCK_BIN_DIR/codex" << 'MOCK_EOF'
 #!/usr/bin/env bash
 # Mock codex binary for testing ask-codex.sh
 # Controlled via environment variables.
+if printf '%s\n' "$@" | grep -qx -- '--help'; then
+    if [[ "${1:-}" == "--disable" ]]; then
+        feature="${2:-}"
+        supported_features=" ${MOCK_CODEX_SUPPORTED_FEATURES:-hooks plugin_hooks codex_hooks} "
+        if [[ "$supported_features" != *" $feature "* ]]; then
+            echo "unknown feature: $feature" >&2
+            exit 2
+        fi
+    fi
+    if [[ -n "${MOCK_CODEX_HELP_OUTPUT:-}" ]]; then
+        echo "$MOCK_CODEX_HELP_OUTPUT"
+    fi
+    exit 0
+fi
+if [[ -n "${MOCK_CODEX_ARGS_FILE:-}" ]]; then
+    printf '%s\n' "$@" > "$MOCK_CODEX_ARGS_FILE"
+fi
 if [[ -n "${MOCK_CODEX_STDERR:-}" ]]; then
     echo "$MOCK_CODEX_STDERR" >&2
 fi
@@ -63,6 +82,9 @@ reset_mock() {
     export MOCK_CODEX_EXIT_CODE="0"
     export MOCK_CODEX_STDOUT=""
     export MOCK_CODEX_STDERR=""
+    export MOCK_CODEX_HELP_OUTPUT=""
+    export MOCK_CODEX_ARGS_FILE=""
+    export MOCK_CODEX_SUPPORTED_FEATURES="hooks plugin_hooks codex_hooks"
     rm -rf "$MOCK_PROJECT/.humanize/skill" 2>/dev/null || true
 }
 
@@ -86,6 +108,7 @@ run_ask_codex_capturing_dir() {
         cd "$MOCK_PROJECT"
         export CLAUDE_PROJECT_DIR="$MOCK_PROJECT"
         export XDG_CACHE_HOME="$RUN_XDG_CACHE_HOME"
+        export XDG_CONFIG_HOME="$TEST_DIR/no-user-config"
         PATH="$MOCK_BIN_DIR:$PATH" bash "$ASK_CODEX_SCRIPT" "$@" 2>&1 >/dev/null
     ) || RUN_EXIT_CODE=$?
     output_path=$(printf '%s\n' "$run_stderr" | grep "^ask-codex: response saved to " | sed 's/^ask-codex: response saved to //')
@@ -114,6 +137,7 @@ run_ask_codex() {
         cd "$MOCK_PROJECT"
         export CLAUDE_PROJECT_DIR="$MOCK_PROJECT"
         export XDG_CACHE_HOME="$TEST_DIR/cache"
+        export XDG_CONFIG_HOME="$TEST_DIR/no-user-config"
         PATH="$MOCK_BIN_DIR:$PATH" bash "$ASK_CODEX_SCRIPT" "$@"
     )
 }
@@ -252,6 +276,54 @@ if [[ $EXIT_CODE -eq 0 ]]; then
 else
     fail "successful run exits 0" "exit 0" "exit=$EXIT_CODE"
 fi
+
+# Test: supported Codex --disable flag disables all known hook features
+reset_mock
+export MOCK_CODEX_STDOUT="hook-disable-test"
+export MOCK_CODEX_HELP_OUTPUT="  --disable <feature>   Disable a feature"
+export MOCK_CODEX_SUPPORTED_FEATURES="hooks plugin_hooks codex_hooks"
+ASK_CODEX_ARGS_FILE="$TEST_DIR/ask-codex-args.txt"
+export MOCK_CODEX_ARGS_FILE="$ASK_CODEX_ARGS_FILE"
+EXIT_CODE=0
+run_ask_codex "hook disable test" > /dev/null 2>&1 || EXIT_CODE=$?
+CAPTURED_ARGS="$(cat "$ASK_CODEX_ARGS_FILE" 2>/dev/null || true)"
+if [[ $EXIT_CODE -eq 0 ]] \
+    && echo "$CAPTURED_ARGS" | grep -qx -- 'exec' \
+    && echo "$CAPTURED_ARGS" | grep -qx -- '--disable' \
+    && echo "$CAPTURED_ARGS" | grep -qx -- 'hooks' \
+    && echo "$CAPTURED_ARGS" | grep -qx -- 'plugin_hooks' \
+    && echo "$CAPTURED_ARGS" | grep -qx -- 'codex_hooks'; then
+    pass "successful run disables all known hook features for nested codex exec"
+else
+    fail "successful run disables all known hook features for nested codex exec" \
+        "exec args include hooks, plugin_hooks, codex_hooks" \
+        "exit=$EXIT_CODE, args=$CAPTURED_ARGS"
+fi
+reset_mock
+
+# Test: older Codex builds only receive supported hook feature names
+reset_mock
+export MOCK_CODEX_STDOUT="legacy-hook-disable-test"
+export MOCK_CODEX_HELP_OUTPUT="  --disable <feature>   Disable a feature"
+export MOCK_CODEX_SUPPORTED_FEATURES="codex_hooks"
+ASK_CODEX_ARGS_FILE="$TEST_DIR/ask-codex-legacy-args.txt"
+export MOCK_CODEX_ARGS_FILE="$ASK_CODEX_ARGS_FILE"
+EXIT_CODE=0
+run_ask_codex "legacy hook disable test" > /dev/null 2>&1 || EXIT_CODE=$?
+CAPTURED_ARGS="$(cat "$ASK_CODEX_ARGS_FILE" 2>/dev/null || true)"
+if [[ $EXIT_CODE -eq 0 ]] \
+    && echo "$CAPTURED_ARGS" | grep -qx -- 'exec' \
+    && echo "$CAPTURED_ARGS" | grep -qx -- '--disable' \
+    && echo "$CAPTURED_ARGS" | grep -qx -- 'codex_hooks' \
+    && ! echo "$CAPTURED_ARGS" | grep -qx -- 'hooks' \
+    && ! echo "$CAPTURED_ARGS" | grep -qx -- 'plugin_hooks'; then
+    pass "successful run disables only supported hook features for older codex"
+else
+    fail "successful run disables only supported hook features for older codex" \
+        "exec args include only codex_hooks" \
+        "exit=$EXIT_CODE, args=$CAPTURED_ARGS"
+fi
+reset_mock
 
 # ========================================
 # Error Handling Tests
@@ -519,6 +591,7 @@ run_ask_codex_probe() {
         cd "$PROBE_PROJECT"
         export CLAUDE_PROJECT_DIR="$PROBE_PROJECT"
         export XDG_CACHE_HOME="$TEST_DIR/cache-probe"
+        export XDG_CONFIG_HOME="$TEST_DIR/no-user-config"
         PATH="$PROBE_BIN_DIR:$PATH" bash "$ASK_CODEX_SCRIPT" "$@"
     )
 }
@@ -545,14 +618,17 @@ reset_mock
 export MOCK_CODEX_STDOUT="probe-test-supports"
 run_ask_codex_probe "probe disable test" > /dev/null 2>&1 || true
 
-# Check that the cached probe result is "yes" in the skill dir
+# Check that the cached probe result lists the supported hook features.
 PROBE_SKILL_DIR=$(find "$PROBE_PROJECT/.humanize/skill" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | tail -1)
-if [[ -n "$PROBE_SKILL_DIR" ]] && [[ -f "$PROBE_SKILL_DIR/.codex-disable-hooks-supported" ]]; then
-    PROBE_RESULT=$(cat "$PROBE_SKILL_DIR/.codex-disable-hooks-supported")
-    if [[ "$PROBE_RESULT" == "yes" ]]; then
-        pass "auto-probe: cached 'yes' when codex supports --disable"
+if [[ -n "$PROBE_SKILL_DIR" ]] && [[ -f "$PROBE_SKILL_DIR/.codex-disable-hooks-features" ]]; then
+    PROBE_RESULT=$(cat "$PROBE_SKILL_DIR/.codex-disable-hooks-features")
+    if echo "$PROBE_RESULT" | grep -qx -- 'hooks' \
+        && echo "$PROBE_RESULT" | grep -qx -- 'plugin_hooks' \
+        && echo "$PROBE_RESULT" | grep -qx -- 'codex_hooks'; then
+        pass "auto-probe: cached supported hook features when codex supports --disable"
     else
-        fail "auto-probe: cached 'yes' when codex supports --disable" "yes" "$PROBE_RESULT"
+        fail "auto-probe: cached supported hook features when codex supports --disable" \
+            "hooks, plugin_hooks, codex_hooks" "$PROBE_RESULT"
     fi
 else
     fail "auto-probe: probe cache file created" "cache file exists" "not found"
@@ -583,6 +659,7 @@ run_ask_codex_probe_no() {
         cd "$PROBE_PROJECT_NO"
         export CLAUDE_PROJECT_DIR="$PROBE_PROJECT_NO"
         export XDG_CACHE_HOME="$TEST_DIR/cache-probe-no"
+        export XDG_CONFIG_HOME="$TEST_DIR/no-user-config"
         PATH="$PROBE_BIN_NO_DIR:$PATH" bash "$ASK_CODEX_SCRIPT" "$@"
     )
 }
@@ -592,23 +669,25 @@ export MOCK_CODEX_STDOUT="probe-test-no-support"
 run_ask_codex_probe_no "probe no-support test" > /dev/null 2>&1 || true
 
 PROBE_NO_SKILL_DIR=$(find "$PROBE_PROJECT_NO/.humanize/skill" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort | tail -1)
-if [[ -n "$PROBE_NO_SKILL_DIR" ]] && [[ -f "$PROBE_NO_SKILL_DIR/.codex-disable-hooks-supported" ]]; then
-    PROBE_NO_RESULT=$(cat "$PROBE_NO_SKILL_DIR/.codex-disable-hooks-supported")
-    if [[ "$PROBE_NO_RESULT" == "no" ]]; then
-        pass "auto-probe: cached 'no' when codex does not support --disable"
+if [[ -n "$PROBE_NO_SKILL_DIR" ]] && [[ -f "$PROBE_NO_SKILL_DIR/.codex-disable-hooks-features" ]]; then
+    PROBE_NO_RESULT=$(cat "$PROBE_NO_SKILL_DIR/.codex-disable-hooks-features")
+    if [[ -z "$PROBE_NO_RESULT" ]]; then
+        pass "auto-probe: cached empty feature list when codex does not support --disable"
     else
-        fail "auto-probe: cached 'no' when codex does not support --disable" "no" "$PROBE_NO_RESULT"
+        fail "auto-probe: cached empty feature list when codex does not support --disable" \
+            "(empty)" "$PROBE_NO_RESULT"
     fi
 else
     fail "auto-probe: probe cache file created for no-support case" "cache file exists" "not found"
 fi
 
 # Test C: ask-codex.sh script contains the probe implementation
-if grep -q "CODEX_DISABLE_HOOKS_ARGS=(--disable hooks)" "$ASK_CODEX_SCRIPT" \
-    && grep -q "codex-disable-hooks-supported" "$ASK_CODEX_SCRIPT"; then
+if grep -q "for feature_name in hooks plugin_hooks codex_hooks" "$ASK_CODEX_SCRIPT" \
+    && grep -q "codex-disable-hooks-features" "$ASK_CODEX_SCRIPT"; then
     pass "ask-codex.sh contains nested hook disable auto-probe implementation"
 else
-    fail "ask-codex.sh contains nested hook disable auto-probe implementation" "hooks disable args + probe cache" "not found"
+    fail "ask-codex.sh contains nested hook disable auto-probe implementation" \
+        "feature loop + probe cache" "not found"
 fi
 
 # ========================================

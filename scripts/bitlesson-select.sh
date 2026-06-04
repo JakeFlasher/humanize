@@ -193,11 +193,17 @@ run_selector() {
         # Capture help output first to avoid pipefail+SIGPIPE interaction when
         # grep exits early (after finding a match) before codex finishes writing.
         local codex_help_output codex_exec_help_output
-        codex_help_output=$(codex --help 2>&1) || true
-        codex_exec_help_output=$(codex exec --help 2>&1) || true
-        # Probe whether the installed Codex CLI supports --disable flag
+        codex_help_output=$(codex --help </dev/null 2>&1) || true
+        codex_exec_help_output=$(codex exec --help </dev/null 2>&1) || true
+        # Probe supported hook feature names before disabling them. Older Codex
+        # CLIs reject unknown feature names even when --disable exists.
         if grep -q -- '--disable' <<< "$codex_help_output"; then
-            codex_exec_args+=("--disable" "hooks")
+            local feature_name
+            for feature_name in hooks plugin_hooks codex_hooks; do
+                if codex --disable "$feature_name" --help </dev/null >/dev/null 2>&1; then
+                    codex_exec_args+=("--disable" "$feature_name")
+                fi
+            done
         fi
         # Probe for --skip-git-repo-check and --ephemeral support
         if grep -q -- '--skip-git-repo-check' <<< "$codex_exec_help_output"; then
