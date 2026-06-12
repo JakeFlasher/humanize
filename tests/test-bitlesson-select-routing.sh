@@ -481,8 +481,10 @@ captured_args="$(cat "$CAPTURE_ARGS")"
 
 if [[ $exit_code -eq 0 ]] \
     && echo "$stdout_out" | grep -q "BL-20260315-tracker-drift" \
-    && echo "$captured_args" | grep -q -- '--disable' \
-    && echo "$captured_args" | grep -q -- 'hooks' \
+    && echo "$captured_args" | grep -qx -- '--disable' \
+    && echo "$captured_args" | grep -qx -- 'hooks' \
+    && echo "$captured_args" | grep -qx -- 'plugin_hooks' \
+    && echo "$captured_args" | grep -qx -- 'codex_hooks' \
     && echo "$captured_args" | grep -q -- '--skip-git-repo-check' \
     && echo "$captured_args" | grep -q -- '--ephemeral' \
     && echo "$captured_args" | grep -q -- 'read-only' \
@@ -492,6 +494,15 @@ else
     fail "Codex selector runs as a direct helper without hooks or full-auto" \
         "exit=0 + direct-helper args" \
         "exit=$exit_code, stdout=$stdout_out, args=$captured_args"
+fi
+
+if ! grep -q 'echo "$codex_help_output" | grep -q' "$BITLESSON_SELECT" \
+        && ! grep -q 'echo "$codex_exec_help_output" | grep -q' "$BITLESSON_SELECT"; then
+    pass "Codex selector probes help output without echo|grep pipefail hazard"
+else
+    fail "Codex selector probes help output without echo|grep pipefail hazard" \
+        "no echo help-output | grep -q probes" \
+        "pipefail-prone probe still present"
 fi
 
 print_test_summary "Bitlesson Select Routing Test Summary"
