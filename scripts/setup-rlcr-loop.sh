@@ -946,8 +946,8 @@ if [[ "$SKIP_IMPL" == "true" ]]; then
             PLAN_CAPABILITY_ANCHOR="capability-map-tbd"
             PLAN_CAPABILITY_NOTE="Plan has a capability map; replace this with affected Capability ID(s) or capability/feature name(s) before review."
         else
-            PLAN_CAPABILITY_ANCHOR="plan-anchor"
-            PLAN_CAPABILITY_NOTE="Plan has no capability map; plan-anchor is the explicit plan fallback."
+            PLAN_CAPABILITY_ANCHOR="N/A"
+            PLAN_CAPABILITY_NOTE="Plan has no capability map; capability alignment is not applicable."
         fi
 
         if [[ -z "$PLAN_GOAL_CONTENT" ]]; then

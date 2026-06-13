@@ -1049,7 +1049,22 @@ else
 fi
 
 echo ""
-echo "Test 45e: --skip-impl with capability map uses map placeholder instead of plan-anchor"
+echo "Test 45e: --skip-impl without capability map uses N/A anchor"
+if [[ -n "$LOOP_DIR_45" ]] && [[ -f "$LOOP_DIR_45/goal-tracker.md" ]] && [[ -f "$LOOP_DIR_45/round-0-contract.md" ]]; then
+    if grep -q "| N/A |" "$LOOP_DIR_45/goal-tracker.md" && \
+       grep -q "Capability Anchor: N/A" "$LOOP_DIR_45/round-0-contract.md" && \
+       ! grep -q "plan-anchor" "$LOOP_DIR_45/goal-tracker.md" && \
+       ! grep -q "plan-anchor" "$LOOP_DIR_45/round-0-contract.md"; then
+        pass "--skip-impl without capability map uses N/A anchor"
+    else
+        fail "--skip-impl legacy plan capability anchor" "N/A without plan-anchor" "$(cat "$LOOP_DIR_45/goal-tracker.md" "$LOOP_DIR_45/round-0-contract.md")"
+    fi
+else
+    fail "--skip-impl legacy plan capability anchor" "goal-tracker.md and round-0-contract.md exist" "missing"
+fi
+
+echo ""
+echo "Test 45f: --skip-impl with capability map uses map placeholder instead of plan-anchor"
 mkdir -p "$TEST_DIR/repo45e"
 init_basic_git_repo "$TEST_DIR/repo45e"
 cat > "$TEST_DIR/repo45e/plan.md" << 'EOF'
