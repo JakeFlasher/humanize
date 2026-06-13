@@ -88,6 +88,11 @@ extract_plan_ac_content() {
     { sed -n '/^##[[:space:]]*[Aa]cceptance\|^##[[:space:]]*[Cc]riteria\|^##[[:space:]]*[Rr]equirements/,/^##/p' "$plan_path" 2>/dev/null || true; } | head -30 | tail -n +2 | head -25
 }
 
+plan_has_capability_map() {
+    local plan_path="$1"
+    grep -Eq '^##[[:space:]]*Feature Map / Capability Map[[:space:]]*$' "$plan_path" 2>/dev/null
+}
+
 show_help() {
     cat <<HELP_EOF
 start-rlcr-loop - Iterative development with Codex review
@@ -937,6 +942,13 @@ if [[ "$SKIP_IMPL" == "true" ]]; then
     if [[ "$SKIP_IMPL_PLAN_ANCHORED" == "true" ]]; then
         PLAN_GOAL_CONTENT=$(extract_plan_goal_content "$FULL_PLAN_PATH")
         PLAN_AC_CONTENT=$(extract_plan_ac_content "$FULL_PLAN_PATH")
+        if plan_has_capability_map "$FULL_PLAN_PATH"; then
+            PLAN_CAPABILITY_ANCHOR="capability-map-tbd"
+            PLAN_CAPABILITY_NOTE="Plan has a capability map; replace this with affected Capability ID(s) or capability/feature name(s) before review."
+        else
+            PLAN_CAPABILITY_ANCHOR="plan-anchor"
+            PLAN_CAPABILITY_NOTE="Plan has no capability map; plan-anchor is the explicit plan fallback."
+        fi
 
         if [[ -z "$PLAN_GOAL_CONTENT" ]]; then
             PLAN_GOAL_CONTENT="Preserve the original plan scope from $PLAN_FILE while resolving code review findings on the current branch."
@@ -984,7 +996,7 @@ $PLAN_AC_CONTENT
 #### Active Tasks
 | Task | Target AC | Status | Tag | Owner | Capability | Notes |
 |------|-----------|--------|-----|-------|------------|-------|
-| [mainline] Preserve original plan alignment while resolving blocking review findings | Plan ACs in scope | pending | coding | claude | plan-anchor | Review-only mode with explicit plan anchor |
+| [mainline] Preserve original plan alignment while resolving blocking review findings | Plan ACs in scope | pending | coding | claude | $PLAN_CAPABILITY_ANCHOR | $PLAN_CAPABILITY_NOTE |
 
 ### Blocking Side Issues
 | Issue | Discovered Round | Blocking AC | Resolution Path |
@@ -1134,7 +1146,7 @@ cat >> "$GOAL_TRACKER_FILE" << 'GOAL_TRACKER_EOF'
 <!-- Mainline tasks only: each task must directly advance the current round objective and carry routing + capability metadata -->
 | Task | Target AC | Status | Tag | Owner | Capability | Notes |
 |------|-----------|--------|-----|-------|------------|-------|
-| [To be populated by Claude based on plan] | - | pending | coding or analyze | claude or codex | cap ID or map section | mainline task only |
+| [To be populated by Claude based on plan] | - | pending | coding or analyze | claude or codex | cap ID, map section, or N/A | mainline task only |
 
 ### Blocking Side Issues
 <!-- Only issues that directly block current mainline progress belong here -->
@@ -1211,7 +1223,8 @@ if [[ "$SKIP_IMPL" == "true" ]]; then
 
 - Mainline Objective: Keep the current branch aligned with @$PLAN_FILE while resolving only review findings that block clean acceptance.
 - Target ACs: The original plan acceptance criteria affected by the current branch changes.
-- Capability Anchor: Original plan capability map nodes affected by the current branch, or plan-anchor if the plan has no capability map.
+- Capability Anchor: $PLAN_CAPABILITY_ANCHOR
+- Capability Anchor Notes: $PLAN_CAPABILITY_NOTE
 - Blocking Side Issues In Scope: Any \`[P0-9]\` findings or regressions that block review acceptance or violate the original plan scope.
 - Queued Side Issues Out of Scope: Non-blocking cleanup, follow-up refactors, or future improvements that do not block review acceptance or plan alignment.
 - Success Criteria: Code review passes and the current branch still matches the original plan's intended scope.
@@ -1314,7 +1327,7 @@ Before starting implementation, create @$ROUND_CONTRACT_PATH with:
 
 1. **One mainline objective** for this round
 2. **Target ACs** (1-2 ACs only)
-3. **Capability Anchor**: the `Feature Map / Capability Map` node(s) or map section this round advances
+3. **Capability Anchor**: the \`Feature Map / Capability Map\` node(s) or map section this round advances, or \`N/A\` when the plan has no capability map
 4. **Blocking side issues in scope** for this round
 5. **Queued side issues out of scope** for this round
 6. **Round success criteria**
@@ -1356,6 +1369,8 @@ If the plan contains \`## Feature Map / Capability Map\`, every mainline task an
 - Fill the Goal Tracker Active Tasks \`Capability\` column for each mainline task.
 - Before coding or analysis, restate how the task fits the selected capability's business, design, and implementation context.
 - Do not let a task drift into another capability or future-scope node unless you record a Plan Evolution entry.
+
+If the plan does not contain \`## Feature Map / Capability Map\`, set the round contract **Capability Anchor** and each Goal Tracker Active Tasks \`Capability\` value to \`N/A\`. Do not invent capability nodes for legacy or hand-written plans without a map.
 
 EOF
 

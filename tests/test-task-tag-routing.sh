@@ -121,6 +121,13 @@ else
     fail "round-0 prompt includes capability anchor section" "capability anchor section" "missing"
 fi
 
+if [[ -n "$PROMPT_FILE" ]] && grep -q 'or `N/A` when the plan has no capability map' "$PROMPT_FILE" && \
+   grep -q "Do not invent capability nodes" "$PROMPT_FILE"; then
+    pass "round-0 prompt allows N/A capability anchors without a map"
+else
+    fail "round-0 prompt allows N/A capability anchors without a map" "N/A/no-fabrication guidance" "missing"
+fi
+
 if [[ -n "$GOAL_TRACKER_FILE" ]] && grep -q "^| Task | Target AC | Status | Tag | Owner | Capability | Notes |" "$GOAL_TRACKER_FILE"; then
     pass "goal tracker Active Tasks table includes Tag/Owner/Capability columns"
 else
