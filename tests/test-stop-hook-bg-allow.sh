@@ -237,6 +237,23 @@ emit_bg_shell_launch_result() {
         }'
 }
 
+emit_bg_shell_launch_result_with_output_path() {
+    local tool_use_id="$1" bg_task_id="$2" output_path="$3"
+    jq -c -n \
+        --arg id "$tool_use_id" \
+        --arg bid "$bg_task_id" \
+        --arg out "$output_path" \
+        '{
+          type:"user",
+          message:{
+            role:"user",
+            content:[{tool_use_id:$id, type:"tool_result",
+                      content:[{type:"text", text:("Command running in background with ID: " + $bid + ". Output is being written to: " + $out + ". You will be notified when it completes.")}]}]
+          },
+          toolUseResult:{backgroundTaskId:$bid}
+        }'
+}
+
 emit_task_completion_event() {
     local task_id="$1" tool_use_id="$2" status="${3:-completed}"
     local notif
@@ -1457,6 +1474,73 @@ AC24_INPUT=$(jq -c -n --arg tp "$AC24_TRANSCRIPT" '{transcript_path:$tp}')
 run_stop_hook_with_input "$AC24_REPO" "$AC24_INPUT" "" "$TEST_DIR/bin/lsof-dead"
 rm -rf "/tmp/claude-${AC24_UID}/${AC24_SLUG}/ac24" 2>/dev/null || true
 assert_reached_codex "AC-24: dead/orphaned task (lsof no holder) is pruned; Codex review runs"
+
+# ---------------- AC-25 ----------------
+# Session resume regression: when Claude resumes a session, the current
+# transcript file has a NEW session id, but background tasks launched
+# earlier physically wrote their .output files under the OLD session
+# directory. The transcript launch message records the real path. The
+# liveness probe must look at that real path, not at a path derived
+# from the current transcript's session id, or orphaned dead tasks are
+# never pruned.
+echo "Test AC-25: liveness probe follows real output path from transcript on session resume"
+AC25_REPO="$TEST_DIR/ac25"
+create_full_fixture "$AC25_REPO" > /dev/null
+AC25_UID=$(id -u)
+AC25_SLUG=$(basename "$TRANSCRIPTS_DIR")
+AC25_OLD_SESSION="aaaaaaaa-1111-2222-3333-444444444444"
+AC25_NEW_SESSION="bbbbbbbb-5555-6666-7777-888888888888"
+AC25_TASK_ID="shell_resumed_session"
+AC25_REAL_OUTPUT="/tmp/claude-${AC25_UID}/${AC25_SLUG}/${AC25_OLD_SESSION}/tasks/${AC25_TASK_ID}.output"
+
+# Build the launch event with the real (old-session) output path embedded
+# in the Claude Code launch message.
+AC25_LAUNCH=$(emit_tool_use_assistant "toolu_AC25" "Bash" ',"command":"sleep 30"')
+AC25_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25" "$AC25_TASK_ID" "$AC25_REAL_OUTPUT")
+
+# Write the transcript under the NEW session id (resume session).
+AC25_TRANSCRIPT="/tmp/claude-${AC25_UID}/${AC25_SLUG}/${AC25_NEW_SESSION}.jsonl"
+write_transcript "$AC25_TRANSCRIPT" "$AC25_LAUNCH" "$AC25_RESULT"
+
+# The real output file lives in the OLD session directory.
+mkdir -p "$(dirname "$AC25_REAL_OUTPUT")"
+touch "$AC25_REAL_OUTPUT"
+
+AC25_INPUT=$(jq -c -n --arg tp "$AC25_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25_REPO" "$AC25_INPUT" "" "$TEST_DIR/bin/lsof-dead"
+rm -rf "/tmp/claude-${AC25_UID}/${AC25_SLUG}/${AC25_OLD_SESSION}" \
+       "/tmp/claude-${AC25_UID}/${AC25_SLUG}/${AC25_NEW_SESSION}.jsonl" 2>/dev/null || true
+assert_reached_codex "AC-25: dead task pruned using real output path from transcript, not derived new-session path"
+
+# ---------------- AC-25b ----------------
+# Same as AC-25, but the recorded output path contains a space. The
+# regex used to extract the path must not stop at the first whitespace
+# token, or it will fall back to the derived new-session path and the
+# dead task will never be pruned.
+echo "Test AC-25b: liveness probe handles whitespace in recorded output path"
+AC25B_REPO="$TEST_DIR/ac25b"
+create_full_fixture "$AC25B_REPO" > /dev/null
+AC25B_UID=$(id -u)
+AC25B_SLUG=$(basename "$TRANSCRIPTS_DIR")
+AC25B_OLD_SESSION="aaaaaaaa-1111-2222-3333-444444444444"
+AC25B_NEW_SESSION="bbbbbbbb-5555-6666-7777-888888888888"
+AC25B_TASK_ID="shell_resumed_session_space"
+AC25B_REAL_OUTPUT="/tmp/claude-${AC25B_UID}/${AC25B_SLUG}/${AC25B_OLD_SESSION}/tasks/with space/${AC25B_TASK_ID}.output"
+
+AC25B_LAUNCH=$(emit_tool_use_assistant "toolu_AC25B" "Bash" ',"command":"sleep 30"')
+AC25B_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25B" "$AC25B_TASK_ID" "$AC25B_REAL_OUTPUT")
+
+AC25B_TRANSCRIPT="/tmp/claude-${AC25B_UID}/${AC25B_SLUG}/${AC25B_NEW_SESSION}.jsonl"
+write_transcript "$AC25B_TRANSCRIPT" "$AC25B_LAUNCH" "$AC25B_RESULT"
+
+mkdir -p "$(dirname "$AC25B_REAL_OUTPUT")"
+touch "$AC25B_REAL_OUTPUT"
+
+AC25B_INPUT=$(jq -c -n --arg tp "$AC25B_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25B_REPO" "$AC25B_INPUT" "" "$TEST_DIR/bin/lsof-dead"
+rm -rf "/tmp/claude-${AC25B_UID}/${AC25B_SLUG}/${AC25B_OLD_SESSION}" \
+       "/tmp/claude-${AC25B_UID}/${AC25B_SLUG}/${AC25B_NEW_SESSION}.jsonl" 2>/dev/null || true
+assert_reached_codex "AC-25b: dead task pruned when real output path contains whitespace"
 
 print_test_summary "Stop Hook Background-Task Allow Test Summary"
 exit $?
