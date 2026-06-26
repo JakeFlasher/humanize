@@ -211,6 +211,27 @@ is_bg_task_alive() {
     fi
     [[ -n "$output_file" ]] || output_file="$tasks_dir/$task_id.output"
 
+    # Session-resume fallback: when the transcript has no extractable
+    # launch path AND the session-derived path does not exist, the real
+    # .output file likely lives under a DIFFERENT session id (the one that
+    # launched the task). Search sibling session dirs under the same
+    # project slug before giving up. This only EXPANDS where we look, so a
+    # genuinely alive task is never wrongly pruned (its file exists and
+    # lsof still sees the open fd); a file missing everywhere remains
+    # genuinely unknown and fails open below as before.
+    if [[ ! -e "$output_file" ]] && [[ -n "$tasks_dir" ]]; then
+        local slug_dir _candidate
+        slug_dir=$(dirname "$(dirname "$tasks_dir")")   # /tmp/claude-<uid>/<slug>
+        if [[ -d "$slug_dir" ]]; then
+            for _candidate in "$slug_dir"/*/tasks/"$task_id".output; do
+                if [[ -f "$_candidate" ]]; then
+                    output_file="$_candidate"
+                    break
+                fi
+            done
+        fi
+    fi
+
     # Output file absent -> fail open (treat as still running).
     [[ -f "$output_file" ]] || return 0
     # lsof unavailable -> fail open.
@@ -241,7 +262,7 @@ prune_dead_bg_task_ids() {
 #   - Background shell: toolUseResult.backgroundTaskId non-empty
 #     -> id is toolUseResult.backgroundTaskId
 #
-# Completion events are recognised from two Claude Code transcript forms:
+# Completion events are recognised from three Claude Code transcript forms:
 #
 #   1. Structured SDK record
 #      (see SDKTaskNotificationMessage in docs/typescript.md):
@@ -252,6 +273,15 @@ prune_dead_bg_task_ids() {
 #   2. Legacy queue-operation enqueue whose `content` embeds a
 #      `<task-notification>` XML block with `<task-id>...</task-id>`;
 #      kept for transcripts produced by older Claude Code versions.
+#
+#   3. TaskStop tool_result: when the model or user stops a background
+#      task via the TaskStop tool, Claude Code records a top-level
+#      `.toolUseResult` whose `.message` is "Successfully stopped task:
+#      <id>" and (usually) whose `.task_id` is the stopped id. The id is
+#      read from `.task_id` when present and otherwise parsed out of the
+#      message text as a fallback. Many builds do NOT also emit a
+#      `task_notification` system event for a TaskStop, so this source is
+#      required or stopped tasks stay pending forever.
 #
 # pending := launched \ completed
 #
@@ -300,7 +330,7 @@ list_pending_background_task_ids() {
         | (.toolUseResult.agentId // .toolUseResult.backgroundTaskId)
     ' "$transcript_path" 2>/dev/null | sort -u) || return 1
 
-    # Union of both completion formats. Either source alone is enough to
+    # Union of all completion formats. Any one source alone is enough to
     # mark a launched id terminal.
     #
     # The `grep -oE || true` guard on the legacy branch keeps `set -o
@@ -321,6 +351,28 @@ list_pending_background_task_ids() {
             ' "$transcript_path" 2>/dev/null \
                 | { grep -oE '<task-id>[^<]+</task-id>' || true; } \
                 | sed -E 's|</?task-id>||g'
+            # TaskStop tool_result (source 3 above): the model/user stopped
+            # a background task. Match the top-level .toolUseResult whose
+            # .message is "Successfully stopped task: <id>" and emit its id.
+            # Required because many builds do not also emit a task_notification
+            # system event for a TaskStop. The id is read from .task_id when
+            # present; otherwise it is parsed out of the message text as a
+            # fallback, because some builds record the id only there. The
+            # message is coerced with `tostring` before `contains()` because
+            # unrelated toolUseResult records may carry a structured (object,
+            # array, number) `.message`, and `contains()` errors on non-strings;
+            # without the coercion one bad record would wipe the whole `completed`
+            # set under pipefail. The `try ... catch empty` keeps a degenerate
+            # message (prefix with no id, so the regex cannot match) from raising.
+            jq -r '
+                select(.toolUseResult != null)
+                | ((.toolUseResult.message // "") | tostring) as $msg
+                | select($msg | contains("Successfully stopped task:"))
+                | (.toolUseResult.task_id
+                   // try ($msg
+                         | capture("Successfully stopped task: (?<i>[^ (]+)")
+                         | .i) catch empty)
+            ' "$transcript_path" 2>/dev/null
         } | sort -u | sed '/^$/d'
     ) || completed=""
 
