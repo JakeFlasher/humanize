@@ -124,6 +124,9 @@ derive_tasks_dir_from_transcript() {
 # text as:
 #   "Command running in background with ID: <task-id>. Output is being
 #    written to: <path>. You will be notified when it completes."
+# The trailing " You will be notified when it completes." sentence is
+# optional: some launch records omit it, and the parser must still recover
+# <path>.
 #
 # The <path> is authoritative: when a Claude session is resumed or
 # continued, the current transcript may have a different session id from
@@ -143,17 +146,24 @@ extract_bg_task_output_path_from_transcript() {
 
     local match
     # Grep the JSONL line that mentions this task id and contains the
-    # literal "Output is being written to". The path is everything between
-    # that prefix and the fixed trailing sentence " You will be notified
-    # when it completes." This handles paths that contain spaces or other
-    # characters that a simple [^[:space:]]+ pattern would reject.
+    # literal "Output is being written to". The path is the text from that
+    # prefix up to the closing JSON string quote: the output path never
+    # contains a double quote, so [^"]* bounds it exactly, including paths
+    # that contain spaces or other characters a [^[:space:]]+ pattern would
+    # reject. The optional trailing ". You will be notified when it
+    # completes." sentence is stripped afterwards. That suffix is emitted by
+    # most Claude Code versions, but some launch records omit it; requiring
+    # it caused the real output path to be missed on session resume, so
+    # is_bg_task_alive fell back to the derived (wrong) current-session path
+    # and dead/orphaned tasks stayed pending forever.
     match=$(grep -F "$task_id" "$transcript_path" 2>/dev/null \
-            | grep -oE 'Output is being written to: .*\. You will be notified when it completes\.' \
+            | grep -oE 'Output is being written to: [^"]*' \
             | head -n1) || true
     [[ -z "$match" ]] && return
 
     local path
     path="${match#Output is being written to: }"
+    # Strip the optional notification suffix; a no-op when absent.
     path="${path%. You will be notified when it completes.}"
     expand_leading_tilde "$path"
 }
