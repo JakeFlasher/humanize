@@ -1583,5 +1583,61 @@ rm -rf "/tmp/claude-${AC25C_UID}/${AC25C_SLUG}/${AC25C_OLD_SESSION}" \
        "/tmp/claude-${AC25C_UID}/${AC25C_SLUG}/${AC25C_NEW_SESSION}.jsonl" 2>/dev/null || true
 assert_reached_codex "AC-25c: dead task pruned when launch message omits the notification suffix"
 
+# ---------------- AC-25d ----------------
+# Task-id matching must be exact, not a substring match. When a pending id
+# is a prefix of another background task id (bash_1 vs bash_10), a bare
+# grep -F "$task_id" also matches the longer id's launch line. With the
+# dead superstring task (bash_10) launched earlier, head -n1 used to select
+# bash_10's output path, lsof then saw a closed file, and the still-running
+# bash_1 was pruned -- letting the stop hook reach Codex before bash_1
+# finished. The extractor must anchor on the exact backgroundTaskId value.
+echo "Test AC-25d: liveness probe matches exact task id (bash_1 not confused with bash_10)"
+AC25D_REPO="$TEST_DIR/ac25d"
+AC25D_LOOP=$(create_full_fixture "$AC25D_REPO")
+AC25D_STATE="$AC25D_LOOP/state.md"
+AC25D_TRANSCRIPT="$TRANSCRIPTS_DIR/ac25d.jsonl"
+
+# bash_10: dead (launched FIRST, output exists, no holder).
+# bash_1:  alive (launched SECOND, output exists, holder present).
+AC25D_DEAD_ID="bash_10"
+AC25D_ALIVE_ID="bash_1"
+AC25D_DEAD_OUTPUT="$TRANSCRIPTS_DIR/${AC25D_DEAD_ID}.output"
+AC25D_ALIVE_OUTPUT="$TRANSCRIPTS_DIR/${AC25D_ALIVE_ID}.output"
+
+# Dead task's launch line is written FIRST so the buggy substring grep
+# (grep -F "bash_1") would encounter it before the real bash_1 line and
+# pick its output path via head -n1.
+AC25D_DEAD_LAUNCH=$(emit_tool_use_assistant "toolu_AC25D_dead" "Bash" ',"command":"sleep 1"')
+AC25D_DEAD_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25D_dead" "$AC25D_DEAD_ID" "$AC25D_DEAD_OUTPUT")
+AC25D_ALIVE_LAUNCH=$(emit_tool_use_assistant "toolu_AC25D_alive" "Bash" ',"command":"sleep 30"')
+AC25D_ALIVE_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25D_alive" "$AC25D_ALIVE_ID" "$AC25D_ALIVE_OUTPUT")
+write_transcript "$AC25D_TRANSCRIPT" \
+    "$AC25D_DEAD_LAUNCH" "$AC25D_DEAD_RESULT" \
+    "$AC25D_ALIVE_LAUNCH" "$AC25D_ALIVE_RESULT"
+
+mkdir -p "$(dirname "$AC25D_DEAD_OUTPUT")"
+touch "$AC25D_DEAD_OUTPUT" "$AC25D_ALIVE_OUTPUT"
+
+# Selective lsof mock: alive (exit 0) only for the EXACT bash_1.output,
+# dead (exit 1) for every other file (including bash_10.output). The
+# */bash_1.output glob cannot match .../bash_10.output because the latter
+# has "0.output" immediately after "bash_1", not ".output".
+cat > "$TEST_DIR/bin/lsof-ac25d" << 'EOF'
+#!/usr/bin/env bash
+case "$1" in
+    */bash_1.output) exit 0 ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$TEST_DIR/bin/lsof-ac25d"
+
+AC25D_INPUT=$(jq -c -n --arg tp "$AC25D_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25D_REPO" "$AC25D_INPUT" "" "$TEST_DIR/bin/lsof-ac25d"
+rm -f "$AC25D_DEAD_OUTPUT" "$AC25D_ALIVE_OUTPUT" "$AC25D_TRANSCRIPT" "$TEST_DIR/bin/lsof-ac25d" 2>/dev/null || true
+# bash_1 is still alive -> short-circuit must fire and block Codex.
+assert_systemmessage_only \
+    "AC-25d: exact task-id match keeps alive bash_1 from being pruned as dead bash_10" \
+    "$AC25D_REPO" "$AC25D_STATE" "1 background task"
+
 print_test_summary "Stop Hook Background-Task Allow Test Summary"
 exit $?

@@ -145,18 +145,31 @@ extract_bg_task_output_path_from_transcript() {
     [[ -z "$task_id" ]] && return
 
     local match
-    # Grep the JSONL line that mentions this task id and contains the
-    # literal "Output is being written to". The path is the text from that
-    # prefix up to the closing JSON string quote: the output path never
-    # contains a double quote, so [^"]* bounds it exactly, including paths
-    # that contain spaces or other characters a [^[:space:]]+ pattern would
-    # reject. The optional trailing ". You will be notified when it
-    # completes." sentence is stripped afterwards. That suffix is emitted by
-    # most Claude Code versions, but some launch records omit it; requiring
-    # it caused the real output path to be missed on session resume, so
-    # is_bg_task_alive fell back to the derived (wrong) current-session path
-    # and dead/orphaned tasks stayed pending forever.
-    match=$(grep -F "$task_id" "$transcript_path" 2>/dev/null \
+    # Select the launch record whose backgroundTaskId is EXACTLY task_id.
+    # The id always appears as a JSON string value in the structured
+    # toolUseResult.backgroundTaskId field on the launch line, so wrapping
+    # it in literal double quotes anchors the match at the JSON-value
+    # boundary. A bare grep -F "$task_id" would match any line that merely
+    # contains the id as a substring: probing "bash_1" would also match an
+    # earlier "bash_10" launch line, and head -n1 below would then pick
+    # bash_10's output path -- probing a dead task's file and pruning the
+    # still-running bash_1. The surrounding quotes make "bash_1" impossible
+    # to match against "bash_10" (the latter has no closing quote right
+    # after the 1), and the path never contains a double quote, so the
+    # quote boundary cannot appear inside a path value either.
+    #
+    # From the selected line, the path is the text from the
+    # "Output is being written to" prefix up to the closing JSON string
+    # quote: the output path never contains a double quote, so [^"]* bounds
+    # it exactly, including paths that contain spaces or other characters a
+    # [^[:space:]]+ pattern would reject. The optional trailing
+    # ". You will be notified when it completes." sentence is stripped
+    # afterwards. That suffix is emitted by most Claude Code versions, but
+    # some launch records omit it; requiring it caused the real output path
+    # to be missed on session resume, so is_bg_task_alive fell back to the
+    # derived (wrong) current-session path and dead/orphaned tasks stayed
+    # pending forever.
+    match=$(grep -F "\"$task_id\"" "$transcript_path" 2>/dev/null \
             | grep -oE 'Output is being written to: [^"]*' \
             | head -n1) || true
     [[ -z "$match" ]] && return
