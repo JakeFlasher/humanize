@@ -237,6 +237,30 @@ emit_bg_shell_launch_result() {
         }'
 }
 
+emit_bg_shell_launch_result_with_output_path() {
+    local tool_use_id="$1" bg_task_id="$2" output_path="$3" include_suffix="${4:-1}"
+    local suffix
+    if [[ "$include_suffix" == "1" ]]; then
+        suffix=". You will be notified when it completes."
+    else
+        suffix=""
+    fi
+    jq -c -n \
+        --arg id "$tool_use_id" \
+        --arg bid "$bg_task_id" \
+        --arg out "$output_path" \
+        --arg suffix "$suffix" \
+        '{
+          type:"user",
+          message:{
+            role:"user",
+            content:[{tool_use_id:$id, type:"tool_result",
+                      content:[{type:"text", text:("Command running in background with ID: " + $bid + ". Output is being written to: " + $out + $suffix)}]}]
+          },
+          toolUseResult:{backgroundTaskId:$bid}
+        }'
+}
+
 emit_task_completion_event() {
     local task_id="$1" tool_use_id="$2" status="${3:-completed}"
     local notif
@@ -1457,6 +1481,196 @@ AC24_INPUT=$(jq -c -n --arg tp "$AC24_TRANSCRIPT" '{transcript_path:$tp}')
 run_stop_hook_with_input "$AC24_REPO" "$AC24_INPUT" "" "$TEST_DIR/bin/lsof-dead"
 rm -rf "/tmp/claude-${AC24_UID}/${AC24_SLUG}/ac24" 2>/dev/null || true
 assert_reached_codex "AC-24: dead/orphaned task (lsof no holder) is pruned; Codex review runs"
+
+# ---------------- AC-25 ----------------
+# Session resume regression: when Claude resumes a session, the current
+# transcript file has a NEW session id, but background tasks launched
+# earlier physically wrote their .output files under the OLD session
+# directory. The transcript launch message records the real path. The
+# liveness probe must look at that real path, not at a path derived
+# from the current transcript's session id, or orphaned dead tasks are
+# never pruned.
+echo "Test AC-25: liveness probe follows real output path from transcript on session resume"
+AC25_REPO="$TEST_DIR/ac25"
+create_full_fixture "$AC25_REPO" > /dev/null
+AC25_UID=$(id -u)
+AC25_SLUG=$(basename "$TRANSCRIPTS_DIR")
+AC25_OLD_SESSION="aaaaaaaa-1111-2222-3333-444444444444"
+AC25_NEW_SESSION="bbbbbbbb-5555-6666-7777-888888888888"
+AC25_TASK_ID="shell_resumed_session"
+AC25_REAL_OUTPUT="/tmp/claude-${AC25_UID}/${AC25_SLUG}/${AC25_OLD_SESSION}/tasks/${AC25_TASK_ID}.output"
+
+# Build the launch event with the real (old-session) output path embedded
+# in the Claude Code launch message.
+AC25_LAUNCH=$(emit_tool_use_assistant "toolu_AC25" "Bash" ',"command":"sleep 30"')
+AC25_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25" "$AC25_TASK_ID" "$AC25_REAL_OUTPUT")
+
+# Write the transcript under the NEW session id (resume session).
+AC25_TRANSCRIPT="/tmp/claude-${AC25_UID}/${AC25_SLUG}/${AC25_NEW_SESSION}.jsonl"
+write_transcript "$AC25_TRANSCRIPT" "$AC25_LAUNCH" "$AC25_RESULT"
+
+# The real output file lives in the OLD session directory.
+mkdir -p "$(dirname "$AC25_REAL_OUTPUT")"
+touch "$AC25_REAL_OUTPUT"
+
+AC25_INPUT=$(jq -c -n --arg tp "$AC25_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25_REPO" "$AC25_INPUT" "" "$TEST_DIR/bin/lsof-dead"
+rm -rf "/tmp/claude-${AC25_UID}/${AC25_SLUG}/${AC25_OLD_SESSION}" \
+       "/tmp/claude-${AC25_UID}/${AC25_SLUG}/${AC25_NEW_SESSION}.jsonl" 2>/dev/null || true
+assert_reached_codex "AC-25: dead task pruned using real output path from transcript, not derived new-session path"
+
+# ---------------- AC-25b ----------------
+# Same as AC-25, but the recorded output path contains a space. The
+# regex used to extract the path must not stop at the first whitespace
+# token, or it will fall back to the derived new-session path and the
+# dead task will never be pruned.
+echo "Test AC-25b: liveness probe handles whitespace in recorded output path"
+AC25B_REPO="$TEST_DIR/ac25b"
+create_full_fixture "$AC25B_REPO" > /dev/null
+AC25B_UID=$(id -u)
+AC25B_SLUG=$(basename "$TRANSCRIPTS_DIR")
+AC25B_OLD_SESSION="aaaaaaaa-1111-2222-3333-444444444444"
+AC25B_NEW_SESSION="bbbbbbbb-5555-6666-7777-888888888888"
+AC25B_TASK_ID="shell_resumed_session_space"
+AC25B_REAL_OUTPUT="/tmp/claude-${AC25B_UID}/${AC25B_SLUG}/${AC25B_OLD_SESSION}/tasks/with space/${AC25B_TASK_ID}.output"
+
+AC25B_LAUNCH=$(emit_tool_use_assistant "toolu_AC25B" "Bash" ',"command":"sleep 30"')
+AC25B_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25B" "$AC25B_TASK_ID" "$AC25B_REAL_OUTPUT")
+
+AC25B_TRANSCRIPT="/tmp/claude-${AC25B_UID}/${AC25B_SLUG}/${AC25B_NEW_SESSION}.jsonl"
+write_transcript "$AC25B_TRANSCRIPT" "$AC25B_LAUNCH" "$AC25B_RESULT"
+
+mkdir -p "$(dirname "$AC25B_REAL_OUTPUT")"
+touch "$AC25B_REAL_OUTPUT"
+
+AC25B_INPUT=$(jq -c -n --arg tp "$AC25B_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25B_REPO" "$AC25B_INPUT" "" "$TEST_DIR/bin/lsof-dead"
+rm -rf "/tmp/claude-${AC25B_UID}/${AC25B_SLUG}/${AC25B_OLD_SESSION}" \
+       "/tmp/claude-${AC25B_UID}/${AC25B_SLUG}/${AC25B_NEW_SESSION}.jsonl" 2>/dev/null || true
+assert_reached_codex "AC-25b: dead task pruned when real output path contains whitespace"
+
+# ---------------- AC-25c ----------------
+# Some Claude Code launch records omit the trailing
+# "You will be notified when it completes." sentence. The path extractor must
+# still recover the real output path from the JSON string (bounded by the
+# closing quote) instead of returning no match. A no-match would make
+# is_bg_task_alive fall back to the derived current-session path, so the real
+# old-session output file is never probed and the dead task stays pending
+# forever -- the exact session-resume regression AC-25 guards against.
+echo "Test AC-25c: liveness probe recovers real path when launch message omits notification suffix"
+AC25C_REPO="$TEST_DIR/ac25c"
+create_full_fixture "$AC25C_REPO" > /dev/null
+AC25C_UID=$(id -u)
+AC25C_SLUG=$(basename "$TRANSCRIPTS_DIR")
+AC25C_OLD_SESSION="aaaaaaaa-1111-2222-3333-444444444444"
+AC25C_NEW_SESSION="bbbbbbbb-5555-6666-7777-888888888888"
+AC25C_TASK_ID="shell_resumed_session_no_suffix"
+AC25C_REAL_OUTPUT="/tmp/claude-${AC25C_UID}/${AC25C_SLUG}/${AC25C_OLD_SESSION}/tasks/${AC25C_TASK_ID}.output"
+
+AC25C_LAUNCH=$(emit_tool_use_assistant "toolu_AC25C" "Bash" ',"command":"sleep 30"')
+# Fourth arg "0" -> emit the launch message WITHOUT the notification suffix.
+AC25C_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25C" "$AC25C_TASK_ID" "$AC25C_REAL_OUTPUT" 0)
+
+AC25C_TRANSCRIPT="/tmp/claude-${AC25C_UID}/${AC25C_SLUG}/${AC25C_NEW_SESSION}.jsonl"
+write_transcript "$AC25C_TRANSCRIPT" "$AC25C_LAUNCH" "$AC25C_RESULT"
+
+mkdir -p "$(dirname "$AC25C_REAL_OUTPUT")"
+touch "$AC25C_REAL_OUTPUT"
+
+AC25C_INPUT=$(jq -c -n --arg tp "$AC25C_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25C_REPO" "$AC25C_INPUT" "" "$TEST_DIR/bin/lsof-dead"
+rm -rf "/tmp/claude-${AC25C_UID}/${AC25C_SLUG}/${AC25C_OLD_SESSION}" \
+       "/tmp/claude-${AC25C_UID}/${AC25C_SLUG}/${AC25C_NEW_SESSION}.jsonl" 2>/dev/null || true
+assert_reached_codex "AC-25c: dead task pruned when launch message omits the notification suffix"
+
+# ---------------- AC-25d ----------------
+# Task-id matching must be exact, not a substring match. When a pending id
+# is a prefix of another background task id (bash_1 vs bash_10), a bare
+# grep -F "$task_id" also matches the longer id's launch line. With the
+# dead superstring task (bash_10) launched earlier, head -n1 used to select
+# bash_10's output path, lsof then saw a closed file, and the still-running
+# bash_1 was pruned -- letting the stop hook reach Codex before bash_1
+# finished. The extractor must anchor on the exact backgroundTaskId value.
+echo "Test AC-25d: liveness probe matches exact task id (bash_1 not confused with bash_10)"
+AC25D_REPO="$TEST_DIR/ac25d"
+AC25D_LOOP=$(create_full_fixture "$AC25D_REPO")
+AC25D_STATE="$AC25D_LOOP/state.md"
+AC25D_TRANSCRIPT="$TRANSCRIPTS_DIR/ac25d.jsonl"
+
+# bash_10: dead (launched FIRST, output exists, no holder).
+# bash_1:  alive (launched SECOND, output exists, holder present).
+AC25D_DEAD_ID="bash_10"
+AC25D_ALIVE_ID="bash_1"
+AC25D_DEAD_OUTPUT="$TRANSCRIPTS_DIR/${AC25D_DEAD_ID}.output"
+AC25D_ALIVE_OUTPUT="$TRANSCRIPTS_DIR/${AC25D_ALIVE_ID}.output"
+
+# Dead task's launch line is written FIRST so the buggy substring grep
+# (grep -F "bash_1") would encounter it before the real bash_1 line and
+# pick its output path via head -n1.
+AC25D_DEAD_LAUNCH=$(emit_tool_use_assistant "toolu_AC25D_dead" "Bash" ',"command":"sleep 1"')
+AC25D_DEAD_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25D_dead" "$AC25D_DEAD_ID" "$AC25D_DEAD_OUTPUT")
+AC25D_ALIVE_LAUNCH=$(emit_tool_use_assistant "toolu_AC25D_alive" "Bash" ',"command":"sleep 30"')
+AC25D_ALIVE_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25D_alive" "$AC25D_ALIVE_ID" "$AC25D_ALIVE_OUTPUT")
+write_transcript "$AC25D_TRANSCRIPT" \
+    "$AC25D_DEAD_LAUNCH" "$AC25D_DEAD_RESULT" \
+    "$AC25D_ALIVE_LAUNCH" "$AC25D_ALIVE_RESULT"
+
+mkdir -p "$(dirname "$AC25D_DEAD_OUTPUT")"
+touch "$AC25D_DEAD_OUTPUT" "$AC25D_ALIVE_OUTPUT"
+
+# Selective lsof mock: alive (exit 0) only for the EXACT bash_1.output,
+# dead (exit 1) for every other file (including bash_10.output). The
+# */bash_1.output glob cannot match .../bash_10.output because the latter
+# has "0.output" immediately after "bash_1", not ".output".
+cat > "$TEST_DIR/bin/lsof-ac25d" << 'EOF'
+#!/usr/bin/env bash
+case "$1" in
+    */bash_1.output) exit 0 ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$TEST_DIR/bin/lsof-ac25d"
+
+AC25D_INPUT=$(jq -c -n --arg tp "$AC25D_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25D_REPO" "$AC25D_INPUT" "" "$TEST_DIR/bin/lsof-ac25d"
+rm -f "$AC25D_DEAD_OUTPUT" "$AC25D_ALIVE_OUTPUT" "$AC25D_TRANSCRIPT" "$TEST_DIR/bin/lsof-ac25d" 2>/dev/null || true
+# bash_1 is still alive -> short-circuit must fire and block Codex.
+assert_systemmessage_only \
+    "AC-25d: exact task-id match keeps alive bash_1 from being pruned as dead bash_10" \
+    "$AC25D_REPO" "$AC25D_STATE" "1 background task"
+
+# ---------------- AC-25e ----------------
+# When the recorded output path contains a character that JSON must escape
+# (a literal backslash in a directory name), the launch record stored in the
+# transcript doubles it to "\\". The extractor must decode the JSON string
+# before handing the path to lsof; reading the raw JSONL text returns the
+# escaped spelling, [[ -f ]] then misses the real file, the dead task is
+# treated as alive forever, and the stop hook never reaches Codex. This is
+# the JSON-decode counterpart of AC-25b's whitespace case.
+echo "Test AC-25e: liveness probe decodes JSON-escaped characters in recorded output path"
+AC25E_REPO="$TEST_DIR/ac25e"
+create_full_fixture "$AC25E_REPO" > /dev/null
+AC25E_UID=$(id -u)
+AC25E_SLUG=$(basename "$TRANSCRIPTS_DIR")
+AC25E_OLD_SESSION="aaaaaaaa-1111-2222-3333-444444444444"
+AC25E_NEW_SESSION="bbbbbbbb-5555-6666-7777-888888888888"
+AC25E_TASK_ID="shell_resumed_session_backslash"
+AC25E_REAL_OUTPUT="/tmp/claude-${AC25E_UID}/${AC25E_SLUG}/${AC25E_OLD_SESSION}/tasks/with\\backslash/${AC25E_TASK_ID}.output"
+
+AC25E_LAUNCH=$(emit_tool_use_assistant "toolu_AC25E" "Bash" ',"command":"sleep 30"')
+AC25E_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25E" "$AC25E_TASK_ID" "$AC25E_REAL_OUTPUT")
+
+AC25E_TRANSCRIPT="/tmp/claude-${AC25E_UID}/${AC25E_SLUG}/${AC25E_NEW_SESSION}.jsonl"
+write_transcript "$AC25E_TRANSCRIPT" "$AC25E_LAUNCH" "$AC25E_RESULT"
+
+mkdir -p "$(dirname "$AC25E_REAL_OUTPUT")"
+touch "$AC25E_REAL_OUTPUT"
+
+AC25E_INPUT=$(jq -c -n --arg tp "$AC25E_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25E_REPO" "$AC25E_INPUT" "" "$TEST_DIR/bin/lsof-dead"
+rm -rf "/tmp/claude-${AC25E_UID}/${AC25E_SLUG}/${AC25E_OLD_SESSION}" \
+       "/tmp/claude-${AC25E_UID}/${AC25E_SLUG}/${AC25E_NEW_SESSION}.jsonl" 2>/dev/null || true
+assert_reached_codex "AC-25e: dead task pruned when real output path contains a JSON-escaped backslash"
 
 print_test_summary "Stop Hook Background-Task Allow Test Summary"
 exit $?
