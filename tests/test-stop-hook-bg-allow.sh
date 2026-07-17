@@ -1639,5 +1639,38 @@ assert_systemmessage_only \
     "AC-25d: exact task-id match keeps alive bash_1 from being pruned as dead bash_10" \
     "$AC25D_REPO" "$AC25D_STATE" "1 background task"
 
+# ---------------- AC-25e ----------------
+# When the recorded output path contains a character that JSON must escape
+# (a literal backslash in a directory name), the launch record stored in the
+# transcript doubles it to "\\". The extractor must decode the JSON string
+# before handing the path to lsof; reading the raw JSONL text returns the
+# escaped spelling, [[ -f ]] then misses the real file, the dead task is
+# treated as alive forever, and the stop hook never reaches Codex. This is
+# the JSON-decode counterpart of AC-25b's whitespace case.
+echo "Test AC-25e: liveness probe decodes JSON-escaped characters in recorded output path"
+AC25E_REPO="$TEST_DIR/ac25e"
+create_full_fixture "$AC25E_REPO" > /dev/null
+AC25E_UID=$(id -u)
+AC25E_SLUG=$(basename "$TRANSCRIPTS_DIR")
+AC25E_OLD_SESSION="aaaaaaaa-1111-2222-3333-444444444444"
+AC25E_NEW_SESSION="bbbbbbbb-5555-6666-7777-888888888888"
+AC25E_TASK_ID="shell_resumed_session_backslash"
+AC25E_REAL_OUTPUT="/tmp/claude-${AC25E_UID}/${AC25E_SLUG}/${AC25E_OLD_SESSION}/tasks/with\\backslash/${AC25E_TASK_ID}.output"
+
+AC25E_LAUNCH=$(emit_tool_use_assistant "toolu_AC25E" "Bash" ',"command":"sleep 30"')
+AC25E_RESULT=$(emit_bg_shell_launch_result_with_output_path "toolu_AC25E" "$AC25E_TASK_ID" "$AC25E_REAL_OUTPUT")
+
+AC25E_TRANSCRIPT="/tmp/claude-${AC25E_UID}/${AC25E_SLUG}/${AC25E_NEW_SESSION}.jsonl"
+write_transcript "$AC25E_TRANSCRIPT" "$AC25E_LAUNCH" "$AC25E_RESULT"
+
+mkdir -p "$(dirname "$AC25E_REAL_OUTPUT")"
+touch "$AC25E_REAL_OUTPUT"
+
+AC25E_INPUT=$(jq -c -n --arg tp "$AC25E_TRANSCRIPT" '{transcript_path:$tp}')
+run_stop_hook_with_input "$AC25E_REPO" "$AC25E_INPUT" "" "$TEST_DIR/bin/lsof-dead"
+rm -rf "/tmp/claude-${AC25E_UID}/${AC25E_SLUG}/${AC25E_OLD_SESSION}" \
+       "/tmp/claude-${AC25E_UID}/${AC25E_SLUG}/${AC25E_NEW_SESSION}.jsonl" 2>/dev/null || true
+assert_reached_codex "AC-25e: dead task pruned when real output path contains a JSON-escaped backslash"
+
 print_test_summary "Stop Hook Background-Task Allow Test Summary"
 exit $?

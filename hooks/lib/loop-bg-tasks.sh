@@ -144,38 +144,43 @@ extract_bg_task_output_path_from_transcript() {
     [[ -f "$transcript_path" ]] || return
     [[ -z "$task_id" ]] && return
 
-    local match
+    # jq is required to decode the launch record's text field; without it the
+    # recorded output path cannot be safely unescaped, so fall back to the
+    # derived tasks_dir path (the pre-transcript-extraction behavior).
+    command -v jq >/dev/null 2>&1 || return
+
     # Select the launch record whose backgroundTaskId is EXACTLY task_id.
-    # The id always appears as a JSON string value in the structured
-    # toolUseResult.backgroundTaskId field on the launch line, so wrapping
-    # it in literal double quotes anchors the match at the JSON-value
-    # boundary. A bare grep -F "$task_id" would match any line that merely
-    # contains the id as a substring: probing "bash_1" would also match an
-    # earlier "bash_10" launch line, and head -n1 below would then pick
-    # bash_10's output path -- probing a dead task's file and pruning the
-    # still-running bash_1. The surrounding quotes make "bash_1" impossible
-    # to match against "bash_10" (the latter has no closing quote right
-    # after the 1), and the path never contains a double quote, so the
-    # quote boundary cannot appear inside a path value either.
+    # The id always appears as a JSON string value in the
+    # toolUseResult.backgroundTaskId field, so wrapping it in literal double
+    # quotes anchors the match at the JSON-value boundary and stops "bash_1"
+    # from matching an earlier "bash_10" launch line (head -n1 below takes the
+    # earliest match, which is the launch record).
+    local match_line
+    match_line=$(grep -F "\"$task_id\"" "$transcript_path" 2>/dev/null | head -n1) || true
+    [[ -z "$match_line" ]] && return
+
+    # Decode the selected record's text field. The output path is embedded
+    # inside a JSON string value, so the raw JSONL text carries JSON escapes
+    # (a literal backslash in the path is doubled to "\\"); reading it raw
+    # would return the escaped spelling, [[ -f ]] would then miss the real
+    # file, and the dead task would be treated as alive forever. jq -r yields
+    # the unescaped string, so the extracted path matches the filesystem.
     #
-    # From the selected line, the path is the text from the
-    # "Output is being written to" prefix up to the closing JSON string
-    # quote: the output path never contains a double quote, so [^"]* bounds
-    # it exactly, including paths that contain spaces or other characters a
-    # [^[:space:]]+ pattern would reject. The optional trailing
-    # ". You will be notified when it completes." sentence is stripped
-    # afterwards. That suffix is emitted by most Claude Code versions, but
-    # some launch records omit it; requiring it caused the real output path
-    # to be missed on session resume, so is_bg_task_alive fell back to the
-    # derived (wrong) current-session path and dead/orphaned tasks stayed
-    # pending forever.
-    match=$(grep -F "\"$task_id\"" "$transcript_path" 2>/dev/null \
-            | grep -oE 'Output is being written to: [^"]*' \
-            | head -n1) || true
-    [[ -z "$match" ]] && return
+    # The path is the text after the "Output is being written to" prefix;
+    # decoding first means the path can contain spaces, quotes or any other
+    # character a raw [^"]* or [^[:space:]]+ pattern would mishandle. The
+    # optional trailing ". You will be notified when it completes." sentence
+    # is emitted by most Claude Code versions but omitted by some; requiring
+    # it caused the real output path to be missed on session resume, so the
+    # suffix is stripped only when present.
+    local decoded
+    decoded=$(printf '%s' "$match_line" | jq -r '
+        .message.content[]?.content[]? | select(.type == "text") | .text
+    ' 2>/dev/null) || true
+    [[ -n "$decoded" && "$decoded" == *"Output is being written to: "* ]] || return
 
     local path
-    path="${match#Output is being written to: }"
+    path="${decoded#*Output is being written to: }"
     # Strip the optional notification suffix; a no-op when absent.
     path="${path%. You will be notified when it completes.}"
     expand_leading_tilde "$path"
