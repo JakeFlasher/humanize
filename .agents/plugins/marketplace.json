@@ -1,0 +1,20 @@
+{
+  "name": "jakeshea-humanize",
+  "interface": {
+    "displayName": "JakeShea Humanize"
+  },
+  "plugins": [
+    {
+      "name": "jakeshea-humanize-rlcr",
+      "source": {
+        "source": "local",
+        "path": "./plugins/jakeshea-humanize-rlcr"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

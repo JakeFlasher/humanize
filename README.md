@@ -1,113 +1,113 @@
-# Humanize
+# JakeShea Humanize RLCR
 
-**Current Version: 1.17.0**
+A personal, Codex-only fork of Humanize for bounded plan implementation with
+independent review loops.
 
-> Derived from the [GAAC (GitHub-as-a-Context)](https://github.com/SihaoLiu/gaac) project.
+This repository is not the official PolyArch Humanize distribution. Its Codex
+identities are deliberately namespaced to avoid collisions with any future
+official plugin:
 
-A Claude Code plugin that provides iterative development with independent AI review. Build with confidence through continuous feedback loops.
+- Plugin: `jakeshea-humanize-rlcr`
+- Marketplace: `jakeshea-humanize`
+- Skill: `$jakeshea-humanize-rlcr:humanize-rlcr`
 
-## What is RLCR?
+## What RLCR does
 
-**RLCR** stands for **Ralph-Loop with Codex Review**, inspired by the official ralph-loop plugin and enhanced with independent Codex review. The name also reads as **Reinforcement Learning with Code Review** -- reflecting the iterative cycle where AI-generated code is continuously refined through external review feedback.
+RLCR means **Ralph Loop with Codex Review**. Codex implements a concrete plan,
+then a native `Stop` hook asks two fresh `gpt-5.6-sol:xhigh` contexts to review
+the same committed artifact:
 
-## Core Concepts
+- **Specification lane**: plan, acceptance criteria, scope, behavior, and test
+  evidence.
+- **Correctness lane**: defects, security, regressions, state/error handling,
+  portability, and meaningful test gaps.
 
-- **Iteration over Perfection** -- Instead of expecting perfect output in one shot, Humanize leverages continuous feedback loops where issues are caught early and refined incrementally.
-- **One Build + One Review** -- Claude implements, Codex independently reviews. No blind spots.
-- **Ralph Loop with Swarm Mode** -- Iterative refinement continues until all acceptance criteria are met. Optionally parallelize with Agent Teams.
-- **Capability Anchors** -- Generated plans include a feature/capability map, and RLCR rounds keep Claude and Codex anchored to the relevant capability node.
-- **Begin with the End in Mind** -- Before the loop starts, Humanize verifies that *you* understand the plan you are about to execute. The human must remain the architect. ([Details](docs/usage.md#begin-with-the-end-in-mind))
+Both lanes must accept the same immutable artifact digest. Blocking findings
+become a continuation prompt; Codex corrects them, commits, and stops again.
+The loop is bounded by review rounds, calls, failures, timeouts, and wall time.
 
-## How It Works
+## Requirements
 
-<p align="center">
-  <img src="docs/images/rlcr-workflow.svg" alt="RLCR Workflow" width="680"/>
-</p>
+- Current Codex CLI with plugins, hooks, structured output, and
+  `gpt-5.6-sol:xhigh` access.
+- Git.
+- Python 3.10 or newer. Windows hooks use the standard `py -3` launcher.
 
-The loop has two phases: **Implementation** (Claude works, Codex reviews summaries) and **Code Review** (Codex checks code quality with severity markers). Issues feed back into implementation until resolved.
-
-
-## Install
+## Install this checkout
 
 ```bash
-# Add PolyArch marketplace
-/plugin marketplace add PolyArch/humanize
-# If you want to use development branch for experimental features
-/plugin marketplace add PolyArch/humanize#dev
-# Then install humanize plugin
-/plugin install humanize@PolyArch
+codex plugin marketplace add /absolute/path/to/humanize
+codex plugin add jakeshea-humanize-rlcr@jakeshea-humanize
 ```
 
-Requires [codex CLI](https://github.com/openai/codex) for review. See the full [Installation Guide](docs/install-for-claude.md) for prerequisites and alternative setup options.
+Open a new Codex conversation, run `/hooks`, inspect and trust the bundled
+hook, then invoke:
 
-## Quick Start
+```text
+$jakeshea-humanize-rlcr:humanize-rlcr implement path/to/plan.md
+```
 
-1. **Generate an idea draft** from a loose thought (optional — skip if you already have a draft):
-   ```bash
-   /humanize:gen-idea "add undo/redo to the editor"
-   ```
-   Output goes to `.humanize/ideas/<slug>-<timestamp>.md` and a companion `directions.json` artifact. Pass a `.md` path to expand existing rough notes. `--n` controls how many parallel directions explore the idea (default 6).
+For installation from another machine, update, removal, and troubleshooting,
+see [Install for Codex](docs/install-for-codex.md).
 
-2. **Explore directions as parallel prototypes** (optional — skip if you want to go straight to planning):
-   ```bash
-   /humanize:explore-idea .humanize/ideas/<slug>-<timestamp>.directions.json
-   ```
-   Dispatches bounded parallel prototype workers (one per direction), each running in an isolated git worktree. After all workers complete, writes `.humanize/explore/<run-id>/explore-report.md` for audit/ranking details and `.humanize/explore/<run-id>/final-idea.md` as the plan-ready synthesis. Worker worktrees are optional prototype fast paths; the default follow-up is to generate a clean plan from `final-idea.md`.
+## Repository layout
 
-3. **Generate a plan** from your draft or explored final idea:
-   ```bash
-   /humanize:gen-plan --input .humanize/explore/<run-id>/final-idea.md --output docs/plan.md
-   ```
-   Add `--coach` to run mandatory short-answer stage quizzes after each planning stage. Normal plan decision questions stay separate; quiz mismatches are treated as design drift, AI design correction, or background gaps before the agent expands the next planning layer.
-   Generated plans include a `Feature Map / Capability Map` before the task breakdown so each task carries its global capability context.
+```text
+.agents/plugins/marketplace.json       Repo marketplace
+plugins/jakeshea-humanize-rlcr/
+├── .codex-plugin/plugin.json          Plugin identity and UI metadata
+├── hooks/hooks.json                   Native synchronous Stop hook
+├── controller/                        State machine, review runner, storage
+├── prompts/                           Independent reviewer lane prompts
+├── schemas/review-v1.json             Structured reviewer output contract
+├── scripts/rlcr.py                    Direct controller entrypoint
+└── skills/humanize-rlcr/              Explicit Codex skill and wrapper
+tests/test-codex-native-rlcr.py         Protocol, concurrency, and safety tests
+```
 
-4. **Refine an annotated plan** before implementation when reviewers add comments (`CMT:` ... `ENDCMT`, `<cmt>` ... `</cmt>`, or `<comment>` ... `</comment>`):
-   ```bash
-   /humanize:refine-plan --input docs/plan.md
-   ```
+The plugin is self-contained and uses only the Python standard library plus the
+Codex and Git executables. Authoritative run state is stored privately under:
 
-5. **Run the loop**:
-   ```bash
-   /humanize:start-rlcr-loop docs/plan.md
-   ```
-   When the plan has a capability map, RLCR records a `Capability Anchor` in each round contract and Goal Tracker active task so Claude coding and Codex review stay aligned with the map.
+```text
+${JAKESHEA_HUMANIZE_RLCR_STATE_HOME:-${XDG_STATE_HOME:-~/.local/state}/jakeshea-humanize-rlcr}
+```
 
-6. **Consult Gemini** for deep web research (requires Gemini CLI):
-   ```bash
-   /humanize:ask-gemini What are the latest best practices for X?
-   ```
+## Development
 
-7. **Monitor progress (in another terminal, not inside Claude Code)**:
-   ```bash
-   source <path/to/humanize>/scripts/humanize.sh # Or just add it into your .bashec or .zshrc
-   humanize monitor rlcr       # RLCR loop
-   humanize monitor skill      # All skill invocations (codex + gemini)
-   humanize monitor codex      # Codex invocations only
-   humanize monitor gemini     # Gemini invocations only
-   humanize monitor web        # Browser dashboard for the current project
-   ```
+```bash
+python3 tests/test-codex-native-rlcr.py
+python3 -m json.tool .agents/plugins/marketplace.json >/dev/null
+```
 
-   The `humanize monitor web` subcommand launches a per-project browser dashboard
-   that layers on top of the same data sources the terminal monitors read. It runs
-   in the foreground by default; pass `--daemon` for the background tmux launcher
-   and `--host` / `--port` / `--auth-token` to configure remote access. See the
-   upgrade note: `/humanize:viz` has been removed in favour of `humanize monitor web`.
+Validate with Codex's built-in `skill-creator` and `plugin-creator` validators
+before reinstalling. Local installs are cached snapshots, so reinstall and use
+a new conversation after every source update:
 
-## Monitor Dashboard
+```bash
+codex plugin add jakeshea-humanize-rlcr@jakeshea-humanize
+```
 
-<p align="center">
-  <img src="docs/images/monitor.png" alt="Humanize Monitor" width="680"/>
-</p>
+## Security boundaries
 
-## Documentation
+- Reviewers are ephemeral, read-only, approval-free, strict-configured, and
+  have hooks, subagents, and web search disabled.
+- Repository Git helpers, filters, text conversion, filesystem monitors,
+  config includes, per-worktree config, and lazy fetching are blocked or
+  neutralized before trusted Git reads.
+- Plan, schema, prompt, manifest, and cumulative patch snapshots are integrity
+  checked before and after review.
+- Hooks are guardrails, not a complete isolation boundary. The two reviewers
+  use independent contexts but the same model family; deterministic tests and
+  human judgment remain necessary.
+- Strict mode currently blocks repositories containing Git submodules.
 
-- [Usage Guide](docs/usage.md) -- Commands, options, environment variables
-- [Install for Claude Code](docs/install-for-claude.md) -- Full installation instructions
-- [Install for Codex](docs/install-for-codex.md) -- Codex skill runtime setup
-- [Install for Kimi](docs/install-for-kimi.md) -- Kimi CLI skill setup
-- [Configuration](docs/usage.md#configuration) -- Shared config hierarchy and override rules
-- [Bitter Lesson Workflow](docs/bitlesson.md) -- Project memory, selector routing, and delta validation
+See [Architecture](docs/architecture.md) for the state machine and trust model.
 
-## License
+## Provenance and license
 
-MIT
+This personal fork descends from PolyArch Humanize, which itself credits the
+GAAC project. The prior Claude Code implementation was removed from this branch
+after the Codex-native plugin became self-contained; it remains recoverable in
+Git history. See [NOTICE](NOTICE.md).
+
+Licensed under the [MIT License](LICENSE).

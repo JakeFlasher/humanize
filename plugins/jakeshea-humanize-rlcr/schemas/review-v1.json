@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Humanize RLCR reviewer result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "lane",
+    "artifact_digest",
+    "candidate_verdict",
+    "summary",
+    "findings",
+    "checks",
+    "residual_risks"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "rlcr.review.v1"},
+    "lane": {"type": "string", "enum": ["specification", "correctness"]},
+    "artifact_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "candidate_verdict": {
+      "type": "string",
+      "enum": ["accept", "changes_requested"]
+    },
+    "summary": {"type": "string", "minLength": 1, "maxLength": 4000},
+    "findings": {
+      "type": "array",
+      "maxItems": 24,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "severity",
+          "blocking",
+          "category",
+          "path",
+          "start_line",
+          "end_line",
+          "claim",
+          "evidence",
+          "remediation",
+          "acceptance_test",
+          "scope_relation"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low"]
+          },
+          "blocking": {"type": "boolean"},
+          "category": {
+            "type": "string",
+            "enum": [
+              "correctness",
+              "security",
+              "plan_gap",
+              "test_gap",
+              "scope",
+              "maintainability"
+            ]
+          },
+          "path": {"type": "string", "maxLength": 500},
+          "start_line": {"type": "integer", "minimum": 0},
+          "end_line": {"type": "integer", "minimum": 0},
+          "claim": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "items": {"type": "string", "minLength": 1, "maxLength": 1500}
+          },
+          "remediation": {"type": "string", "minLength": 1, "maxLength": 2000},
+          "acceptance_test": {"type": "string", "minLength": 1, "maxLength": 1500},
+          "scope_relation": {
+            "type": "string",
+            "enum": ["in_scope", "out_of_scope"]
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion_id", "status", "evidence"],
+        "properties": {
+          "criterion_id": {"type": "string", "minLength": 1, "maxLength": 200},
+          "status": {
+            "type": "string",
+            "enum": ["pass", "fail", "unknown"]
+          },
+          "evidence": {"type": "string", "minLength": 1, "maxLength": 1500}
+        }
+      }
+    },
+    "residual_risks": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {"type": "string", "minLength": 1, "maxLength": 1000}
+    }
+  }
+}

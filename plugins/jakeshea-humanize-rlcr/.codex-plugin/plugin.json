@@ -1,0 +1,33 @@
+{
+  "name": "jakeshea-humanize-rlcr",
+  "version": "0.1.0+codex.20260821172218",
+  "description": "Personal Humanize fork for bounded implementation loops with independent GPT-5.6 Sol reviewers in Codex.",
+  "author": {
+    "name": "JakeShea",
+    "url": "https://github.com/JakeFlasher"
+  },
+  "homepage": "https://github.com/JakeFlasher/humanize",
+  "repository": "https://github.com/JakeFlasher/humanize",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "code-review",
+    "iterative-development",
+    "rlcr"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "JakeShea Humanize RLCR",
+    "shortDescription": "Bounded independent review loops for Codex",
+    "longDescription": "Implement a plan in Codex, then gate completion on two fresh, read-only GPT-5.6 Sol reviewers with structured verdicts and bounded retries.",
+    "developerName": "JakeShea",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Implement docs/plan.md with the Humanize RLCR loop."
+    ]
+  }
+}
