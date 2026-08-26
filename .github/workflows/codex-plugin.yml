@@ -22,6 +22,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install development checks
+        run: python3 -m pip install pyright==1.1.411 ruff==0.16.2
+
+      - name: Lint and check formatting
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Type-check controller
+        run: pyright
+
       - name: Run native RLCR tests
         run: python3 tests/test-codex-native-rlcr.py
 
@@ -31,10 +42,11 @@ jobs:
           python3 -m json.tool plugins/jakeshea-humanize-rlcr/.codex-plugin/plugin.json >/dev/null
           python3 -m json.tool plugins/jakeshea-humanize-rlcr/hooks/hooks.json >/dev/null
           python3 -m json.tool plugins/jakeshea-humanize-rlcr/schemas/review-v1.json >/dev/null
+          python3 -m json.tool plugins/jakeshea-humanize-rlcr/schemas/plan-contract-v1.json >/dev/null
 
       - name: Check controller syntax
         run: |
           python3 -m py_compile \
             plugins/jakeshea-humanize-rlcr/controller/*.py \
             plugins/jakeshea-humanize-rlcr/scripts/rlcr.py \
-            plugins/jakeshea-humanize-rlcr/skills/humanize-rlcr/scripts/rlcr.py
+            plugins/jakeshea-humanize-rlcr/skills/*/scripts/rlcr.py

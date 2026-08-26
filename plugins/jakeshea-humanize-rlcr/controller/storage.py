@@ -12,8 +12,11 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
+from .domain import canonical_json, sha256_digest
+from .migrations import migrate_state
 
 RUN_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$")
+EVENT_FILE_RE = re.compile(r"^[0-9]{8}\.json$")
 
 
 class StoreError(RuntimeError):
@@ -39,11 +42,16 @@ def active_pointer_exists(project_root: Path) -> bool:
 
     canonical = project_root.resolve()
     project_key = hashlib.sha256(os.fsencode(str(canonical))).hexdigest()
-    return (state_home() / "projects" / f"{project_key}.json").is_file()
+    pointer = state_home() / "projects" / f"{project_key}.json"
+    return pointer.is_symlink() or pointer.is_file()
 
 
 def _secure_directory(path: Path) -> None:
+    if path.is_symlink():
+        raise StoreError(f"controller directory was replaced by a symbolic link: {path}")
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not path.is_dir():
+        raise StoreError(f"controller directory is not a directory: {path}")
     if os.name != "nt":
         path.chmod(0o700)
 
@@ -93,6 +101,8 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def read_json_object(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise StoreError(f"controller JSON file is missing or replaced: {path}")
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -110,10 +120,20 @@ class FileLock(AbstractContextManager["FileLock"]):
         self.timeout = timeout
         self._handle: Any = None
 
-    def __enter__(self) -> "FileLock":
+    def __enter__(self) -> FileLock:
         _secure_directory(self.path.parent)
-        self._handle = self.path.open("a+b")
-        _secure_file(self.path)
+        if self.path.is_symlink():
+            raise StoreError(f"controller lock was replaced by a symbolic link: {self.path}")
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            descriptor = os.open(self.path, flags, 0o600)
+        except OSError as exc:
+            raise StoreError(f"unable to open controller lock safely: {self.path}") from exc
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        self._handle = os.fdopen(descriptor, "r+b")
         if self.path.stat().st_size == 0:
             self._handle.write(b"0")
             self._handle.flush()
@@ -130,11 +150,11 @@ class FileLock(AbstractContextManager["FileLock"]):
 
                     fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 return self
-            except (BlockingIOError, OSError):
+            except (BlockingIOError, OSError) as exc:
                 if time.monotonic() >= deadline:
                     self._handle.close()
                     self._handle = None
-                    raise StoreError("another RLCR controller operation is in progress")
+                    raise StoreError("another RLCR controller operation is in progress") from exc
                 time.sleep(0.05)
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
@@ -186,9 +206,13 @@ class StateStore:
         _secure_directory(path)
         _secure_directory(path / "rounds")
         _secure_directory(path / "harness")
+        _secure_directory(path / "events")
+        _secure_directory(path / "evidence")
         return path
 
     def load_active(self) -> tuple[dict[str, Any], Path] | None:
+        if self.pointer_path.is_symlink():
+            raise StoreError("RLCR project pointer was replaced by a symbolic link")
         if not self.pointer_path.is_file():
             return None
         pointer = read_json_object(self.pointer_path)
@@ -197,12 +221,117 @@ class StateStore:
         run_id = pointer.get("run_id")
         if not isinstance(run_id, str):
             raise StoreError("RLCR project pointer has no valid run id")
+        return self.load_run(run_id)
+
+    def load_run(self, run_id: str) -> tuple[dict[str, Any], Path]:
+        """Load one historical run without changing the active pointer."""
+
         run_dir = self.run_dir(run_id)
+        if run_dir.is_symlink() or not run_dir.is_dir():
+            raise StoreError(f"RLCR run directory is missing or replaced: {run_dir}")
         state_path = run_dir / "state.json"
-        if not state_path.is_file():
-            raise StoreError(f"RLCR project pointer references missing state: {state_path}")
-        state = read_json_object(state_path)
+        if not state_path.is_file() or state_path.is_symlink():
+            raise StoreError(f"RLCR run has no valid state snapshot: {state_path}")
+        state = migrate_state(read_json_object(state_path))
+        if state.get("schema_version") == "rlcr.run.v2":
+            state = self._recover_state(state, run_dir)
+        if state.get("project_root") != str(self.project_root):
+            raise StoreError("RLCR run state belongs to a different repository")
+        if state.get("run_id") != run_id:
+            raise StoreError("RLCR run state does not match its directory")
         return state, run_dir
+
+    def list_runs(self) -> list[tuple[dict[str, Any], Path]]:
+        """Return every readable run newest first."""
+
+        if self.runs_dir.is_symlink():
+            raise StoreError("RLCR runs directory was replaced by a symbolic link")
+        if not self.runs_dir.is_dir():
+            return []
+        runs: list[tuple[dict[str, Any], Path]] = []
+        for path in sorted(self.runs_dir.iterdir(), reverse=True):
+            if RUN_ID_RE.fullmatch(path.name) is None:
+                continue
+            if path.is_symlink() or not path.is_dir():
+                raise StoreError(f"RLCR run directory is missing or replaced: {path}")
+            runs.append(self.load_run(path.name))
+        return runs
+
+    def _event_files(self, run_dir: Path) -> list[Path]:
+        events_dir = run_dir / "events"
+        if events_dir.is_symlink():
+            raise StoreError(f"event directory was replaced by a symbolic link: {events_dir}")
+        if not events_dir.is_dir():
+            return []
+        files: list[Path] = []
+        for path in events_dir.iterdir():
+            if EVENT_FILE_RE.fullmatch(path.name) is None:
+                continue
+            if path.is_symlink() or not path.is_file():
+                raise StoreError(f"event file is missing or replaced: {path}")
+            files.append(path)
+        return sorted(files)
+
+    def _recover_state(self, state: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+        """Finish a state commit whose authoritative event landed before its snapshot."""
+
+        previous = ""
+        previous_sequence: int | None = None
+        last_record: dict[str, Any] | None = None
+        event_files = self._event_files(run_dir)
+        if not event_files and (
+            state.get("last_event_digest") or state.get("migrated_from") != "rlcr.run.v1"
+        ):
+            raise StoreError("authoritative event journal is missing")
+        for path in event_files:
+            record = read_json_object(path)
+            file_sequence = int(path.stem)
+            if record.get("sequence") != file_sequence:
+                raise StoreError(f"event sequence does not match its filename: {path}")
+            if previous_sequence is not None and file_sequence != previous_sequence + 1:
+                raise StoreError(f"event sequence has a gap before: {path}")
+            event_digest = record.get("event_digest")
+            if not isinstance(event_digest, str):
+                raise StoreError(f"event has no digest: {path}")
+            if record.get("previous_event_digest") != previous:
+                raise StoreError(f"event digest chain is broken: {path}")
+            core = {
+                key: value
+                for key, value in record.items()
+                if key not in {"event_digest", "state_digest"}
+            }
+            if sha256_digest(canonical_json(core)) != event_digest:
+                raise StoreError(f"event digest does not match its contents: {path}")
+            state_after = record.get("_state_after")
+            if not isinstance(state_after, dict):
+                raise StoreError(f"event has no recoverable state: {path}")
+            previous = event_digest
+            previous_sequence = file_sequence
+            last_record = record
+
+        if last_record is None:
+            return state
+        event_state = dict(last_record["_state_after"])
+        event_state["last_event_digest"] = last_record["event_digest"]
+        expected_state_digest = last_record.get("state_digest")
+        if (
+            not isinstance(expected_state_digest, str)
+            or sha256_digest(canonical_json(event_state)) != expected_state_digest
+        ):
+            raise StoreError("latest event does not attest its recoverable state")
+        state_sequence = state.get("sequence")
+        event_sequence = event_state.get("sequence")
+        if not isinstance(state_sequence, int) or not isinstance(event_sequence, int):
+            raise StoreError("state or event sequence is invalid")
+        if state_sequence > event_sequence:
+            raise StoreError("state snapshot is ahead of the authoritative event journal")
+        if state_sequence < event_sequence:
+            self.save_state(event_state, run_dir)
+            return event_state
+        if canonical_json(state) != canonical_json(event_state):
+            self.save_state(event_state, run_dir)
+            return event_state
+        return state
 
     def save_new(self, state: dict[str, Any], run_dir: Path) -> None:
         run_id = state.get("run_id")
@@ -218,6 +347,55 @@ class StateStore:
             },
         )
 
+    def commit_new(self, state: dict[str, Any], run_dir: Path, event: dict[str, Any]) -> None:
+        """Commit the first event/state pair and then publish the project pointer."""
+
+        self.commit(state, run_dir, event)
+        atomic_write_json(
+            self.pointer_path,
+            {
+                "project_root": str(self.project_root),
+                "run_id": state.get("run_id"),
+                "updated_at": state.get("updated_at"),
+            },
+        )
+
+    def commit(self, state: dict[str, Any], run_dir: Path, event: dict[str, Any]) -> None:
+        """Persist a recoverable, hash-chained event before its state snapshot."""
+
+        sequence = state.get("sequence")
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+            raise StoreError("refusing to commit an invalid state sequence")
+        if event.get("sequence") != sequence:
+            raise StoreError("event and state sequences do not match")
+        previous = state.get("last_event_digest", "")
+        if not isinstance(previous, str):
+            raise StoreError("state has an invalid previous-event digest")
+        recoverable = dict(state)
+        recoverable["last_event_digest"] = previous
+        core = {
+            **event,
+            "previous_event_digest": previous,
+            "_state_after": recoverable,
+        }
+        event_digest = sha256_digest(canonical_json(core))
+        final_state = dict(state)
+        final_state["last_event_digest"] = event_digest
+        record = {
+            **core,
+            "event_digest": event_digest,
+            "state_digest": sha256_digest(canonical_json(final_state)),
+        }
+        event_path = run_dir / "events" / f"{sequence:08d}.json"
+        if event_path.exists() or event_path.is_symlink():
+            raise StoreError(f"event sequence already exists: {sequence}")
+        atomic_write_json(event_path, record)
+        summary = {key: value for key, value in record.items() if key != "_state_after"}
+        self.append_event(run_dir, summary)
+        self.save_state(final_state, run_dir)
+        state.clear()
+        state.update(final_state)
+
     def save_state(self, state: dict[str, Any], run_dir: Path) -> None:
         if state.get("project_root") != str(self.project_root):
             raise StoreError("refusing to save state for a different repository")
@@ -231,13 +409,16 @@ class StateStore:
 
     def append_event(self, run_dir: Path, event: dict[str, Any]) -> None:
         journal = run_dir / "journal.jsonl"
-        encoded = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode(
-            "utf-8"
-        )
-        descriptor = os.open(journal, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        try:
-            os.write(descriptor, encoded)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        _secure_file(journal)
+        if journal.is_symlink():
+            raise StoreError("event summary journal was replaced by a symbolic link")
+        encoded = (json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(journal, flags, 0o600)
+        if os.name != "nt":
+            os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "ab") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())

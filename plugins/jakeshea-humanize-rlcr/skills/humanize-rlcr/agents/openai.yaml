@@ -1,6 +1,6 @@
 interface:
   display_name: "JakeShea Humanize RLCR"
   short_description: "Run bounded independent Codex review loops"
-  default_prompt: "Use $jakeshea-humanize-rlcr:humanize-rlcr to implement docs/plan.md with independent review."
+  default_prompt: "Use $jakeshea-humanize-rlcr:humanize-rlcr to implement docs/plan.md with a structured contract, same-commit evidence, and independent review."
 policy:
   allow_implicit_invocation: false

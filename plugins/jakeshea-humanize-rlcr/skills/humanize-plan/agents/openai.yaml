@@ -1,0 +1,6 @@
+interface:
+  display_name: "JakeShea Humanize Plan"
+  short_description: "Create implementation-ready RLCR plans"
+  default_prompt: "Use $jakeshea-humanize-rlcr:humanize-plan to create an implementation-ready plan and rlcr.plan.v1 contract for this change."
+policy:
+  allow_implicit_invocation: false

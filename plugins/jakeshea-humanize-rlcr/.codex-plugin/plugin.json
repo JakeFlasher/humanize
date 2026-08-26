@@ -1,7 +1,7 @@
 {
   "name": "jakeshea-humanize-rlcr",
-  "version": "0.1.0+codex.20260821172218",
-  "description": "Personal Humanize fork for bounded implementation loops with independent GPT-5.6 Sol reviewers in Codex.",
+  "version": "0.2.0+codex.20260826121340",
+  "description": "Codex-only Humanize RLCR v2 with structured plans, same-commit evidence, bounded dual-lane review, recovery, and traces.",
   "author": {
     "name": "JakeShea",
     "url": "https://github.com/JakeFlasher"
@@ -12,14 +12,16 @@
   "keywords": [
     "codex",
     "code-review",
+    "evidence",
     "iterative-development",
-    "rlcr"
+    "rlcr",
+    "tracing"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "JakeShea Humanize RLCR",
     "shortDescription": "Bounded independent review loops for Codex",
-    "longDescription": "Implement a plan in Codex, then gate completion on two fresh, read-only GPT-5.6 Sol reviewers with structured verdicts and bounded retries.",
+    "longDescription": "Plan, implement, attest, and review committed changes in Codex. RLCR v2 gates completion on two fresh read-only GPT-5.6 Sol lanes, controller-enforced contracts and evidence, immutable budgets, recoverable state, and portable reports.",
     "developerName": "JakeShea",
     "category": "Developer Tools",
     "capabilities": [
@@ -27,7 +29,7 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Implement docs/plan.md with the Humanize RLCR loop."
+      "Create a structured plan contract, implement it with the Humanize RLCR loop, attach same-commit test evidence, and continue until independent acceptance."
     ]
   }
 }

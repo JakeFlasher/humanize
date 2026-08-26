@@ -1,0 +1,6 @@
+interface:
+  display_name: "JakeShea Humanize Review"
+  short_description: "Run one-pass dual-lane code review"
+  default_prompt: "Use $jakeshea-humanize-rlcr:humanize-review to independently review the committed change against its plan and base ref."
+policy:
+  allow_implicit_invocation: false

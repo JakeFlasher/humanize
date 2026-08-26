@@ -8,6 +8,8 @@ Its personal namespace is intentionally distinct from upstream Humanize:
 - Plugin ID: `jakeshea-humanize-rlcr`
 - Marketplace ID: `jakeshea-humanize`
 - Skill selector: `$jakeshea-humanize-rlcr:humanize-rlcr`
+- Planning selector: `$jakeshea-humanize-rlcr:humanize-plan`
+- Review-only selector: `$jakeshea-humanize-rlcr:humanize-review`
 
 ## Requirements
 
@@ -72,10 +74,15 @@ If the fork is pushed under another owner or branch, substitute those values.
 - Reviewer timeout: 15 minutes by default and maximum.
 - Total wall time: 2 hours by default, hard maximum 24 hours.
 - Infrastructure failures: maximum 3.
+- Reviewer token budgets: 8,000,000 input, 1,000,000 output, and 1,000,000
+  reasoning-output tokens by default; each is configurable with a hard maximum
+  of 100,000,000.
 - Unchanged rejected artifacts reuse their cached correction packet.
+- Successful reviewer lanes are cached independently when a peer lane needs a
+  retry.
 
-The skill can pass smaller values through `--max-rounds`, `--review-timeout`,
-and `--max-minutes`.
+The skill can pass values through `--max-rounds`, `--review-timeout`,
+`--max-minutes`, and the three `--max-*-tokens` flags.
 
 ## Manual controller commands
 
@@ -85,12 +92,33 @@ From a source checkout:
 python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py start --plan docs/plan.md
 python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py step
 python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py status
+python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py history
+python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py show --run <run-id>
+python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py adopt
 python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py cancel --reason "user canceled"
 python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py resume
+python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py report --format markdown
+python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py export --output rlcr-trace.json
 ```
 
 `step` exits `0` on acceptance, `10` when corrections remain, and `20` for a
 controller or infrastructure block.
+
+For a structured plan and required same-commit test evidence:
+
+```bash
+python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py contract validate \
+  --contract docs/plan-contract.json
+python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py start \
+  --plan docs/plan.md --contract docs/plan-contract.json \
+  --require-check unit-tests
+# after implementation is committed:
+python3 plugins/jakeshea-humanize-rlcr/scripts/rlcr.py evidence run \
+  --name unit-tests -- python3 tests/test-codex-native-rlcr.py
+```
+
+The evidence command does not invoke a shell. A new commit invalidates the
+record, so rerun required checks after every correction commit.
 
 Private state defaults to:
 
@@ -116,6 +144,11 @@ For a local-path marketplace, pull or edit the checkout before reinstalling;
 `marketplace upgrade` is only needed for Git-backed sources. If the hook changed,
 review and trust its new hash through `/hooks`.
 
+When moving from v1 to v2, finish or cancel an active run before reinstalling;
+the runtime digest intentionally prevents an in-flight run from changing
+semantics. Historical v1 state remains readable. See
+[Migrating from RLCR v1 to v2](migration-v2.md).
+
 ## Remove
 
 ```bash
@@ -129,6 +162,8 @@ when you intentionally want to destroy the audit record.
 ## Limitations
 
 - The reviewers use fresh contexts but the same model family.
+- Dual lanes mitigate context correlation, not model-family correlation; this
+  is not equivalent to a diverse-model jury.
 - Read-only Codex sandboxes have broader read visibility than sealed snapshots.
 - The CLI pins the requested model and effort, but does not expose a portable
   effective-model reroute attestation.
